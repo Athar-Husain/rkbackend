@@ -1,13 +1,19 @@
-const admin = require("firebase-admin");
-const nodemailer = require("nodemailer");
-const twilio = require("twilio");
+import admin from "firebase-admin";
+import nodemailer from "nodemailer";
+import twilio from "twilio";
+import fs from "fs"; // Required to read the Firebase service account JSON
+import User from "../models/User.model.js";
+import NotificationLog from "../models/NotificationLog.js";
 
 // Initialize Firebase Admin SDK
 let firebaseInitialized = false;
 if (process.env.FIREBASE_SERVICE_ACCOUNT_KEY_PATH) {
   try {
-    const serviceAccount = require(process.env
-      .FIREBASE_SERVICE_ACCOUNT_KEY_PATH);
+    // In ES6, we read JSON files manually
+    const serviceAccount = JSON.parse(
+      fs.readFileSync(process.env.FIREBASE_SERVICE_ACCOUNT_KEY_PATH, "utf8"),
+    );
+
     admin.initializeApp({
       credential: admin.credential.cert(serviceAccount),
     });
@@ -23,7 +29,7 @@ let twilioClient;
 if (process.env.TWILIO_ACCOUNT_SID && process.env.TWILIO_AUTH_TOKEN) {
   twilioClient = twilio(
     process.env.TWILIO_ACCOUNT_SID,
-    process.env.TWILIO_AUTH_TOKEN
+    process.env.TWILIO_AUTH_TOKEN,
   );
 }
 
@@ -54,7 +60,6 @@ class NotificationService {
         return { success: false, message: "Firebase not configured" };
       }
 
-      const User = require("../models/User.model.js");
       const user = await User.findById(userId);
 
       if (!user || !user.deviceTokens || user.deviceTokens.length === 0) {
@@ -66,8 +71,8 @@ class NotificationService {
         .filter(
           (token) =>
             token.token &&
-            token.lastActive > new Date(Date.now() - 30 * 24 * 60 * 60 * 1000)
-        ) // Last 30 days
+            token.lastActive > new Date(Date.now() - 30 * 24 * 60 * 60 * 1000),
+        )
         .map((token) => token.token);
 
       if (tokens.length === 0) {
@@ -75,10 +80,7 @@ class NotificationService {
       }
 
       const message = {
-        notification: {
-          title: title,
-          body: body,
-        },
+        notification: { title, body },
         data: data,
         tokens: tokens,
       };
@@ -100,13 +102,10 @@ class NotificationService {
       };
     } catch (error) {
       console.error("Error sending push notification:", error);
-
-      // Log the failed notification
       await this.logNotification(userId, "PUSH", title, body, {
         error: error.message,
         data: data,
       });
-
       throw new Error("Failed to send push notification");
     }
   }
@@ -125,10 +124,6 @@ class NotificationService {
         to: `+91${mobile}`,
       });
 
-      console.log(`SMS sent to ${mobile}: ${sms.sid}`);
-
-      // Find user by mobile and log notification
-      const User = require("../models/User.model.js");
       const user = await User.findOne({ mobile });
       if (user) {
         await this.logNotification(
@@ -137,17 +132,13 @@ class NotificationService {
           "SMS Notification",
           message,
           {
-            mobile: mobile,
+            mobile,
             sid: sms.sid,
-          }
+          },
         );
       }
 
-      return {
-        success: true,
-        sid: sms.sid,
-        message: "SMS sent successfully",
-      };
+      return { success: true, sid: sms.sid, message: "SMS sent successfully" };
     } catch (error) {
       console.error("Error sending SMS:", error);
       throw new Error("Failed to send SMS");
@@ -158,16 +149,12 @@ class NotificationService {
   static async sendEmail(email, subject, htmlContent, textContent = "") {
     try {
       if (!emailTransporter) {
-        console.log(
-          `Email not sent (Email service not configured): ${subject}`
-        );
+        console.log(`Email not sent (Service not configured): ${subject}`);
         return { success: false, message: "Email service not configured" };
       }
 
       const mailOptions = {
-        from: `"RK Electronics" <${
-          process.env.EMAIL_FROM || process.env.EMAIL_USER
-        }>`,
+        from: `"RK Electronics" <${process.env.EMAIL_FROM || process.env.EMAIL_USER}>`,
         to: email,
         subject: subject,
         text: textContent,
@@ -176,14 +163,10 @@ class NotificationService {
 
       const info = await emailTransporter.sendMail(mailOptions);
 
-      console.log(`Email sent to ${email}: ${info.messageId}`);
-
-      // Find user by email and log notification
-      const User = require("../models/User.model.js");
       const user = await User.findOne({ email });
       if (user) {
         await this.logNotification(user._id, "EMAIL", subject, textContent, {
-          email: email,
+          email,
           messageId: info.messageId,
         });
       }
@@ -199,7 +182,7 @@ class NotificationService {
     }
   }
 
-  // Send WhatsApp message (using Twilio WhatsApp API)
+  // Send WhatsApp message
   static async sendWhatsApp(mobile, message) {
     try {
       if (!twilioClient) {
@@ -213,10 +196,6 @@ class NotificationService {
         to: `whatsapp:+91${mobile}`,
       });
 
-      console.log(`WhatsApp sent to ${mobile}: ${whatsapp.sid}`);
-
-      // Find user by mobile and log notification
-      const User = require("../models/User.model.js");
       const user = await User.findOne({ mobile });
       if (user) {
         await this.logNotification(
@@ -225,16 +204,16 @@ class NotificationService {
           "WhatsApp Notification",
           message,
           {
-            mobile: mobile,
+            mobile,
             sid: whatsapp.sid,
-          }
+          },
         );
       }
 
       return {
         success: true,
         sid: whatsapp.sid,
-        message: "WhatsApp message sent successfully",
+        message: "WhatsApp sent successfully",
       };
     } catch (error) {
       console.error("Error sending WhatsApp:", error);
@@ -242,13 +221,13 @@ class NotificationService {
     }
   }
 
-  // Send bulk notifications to users
+  // Send bulk notifications
   static async sendBulkNotifications(
     userIds,
     title,
     body,
     type = "PUSH",
-    data = {}
+    data = {},
   ) {
     try {
       const results = {
@@ -261,6 +240,7 @@ class NotificationService {
       for (const userId of userIds) {
         try {
           let result;
+          const user = await User.findById(userId);
 
           switch (type) {
             case "PUSH":
@@ -268,65 +248,50 @@ class NotificationService {
                 userId,
                 title,
                 body,
-                data
+                data,
               );
               break;
             case "SMS":
-              // Need mobile number for SMS
-              const User = require("../models/User.model.js");
-              const user = await User.findById(userId);
-              if (user && user.mobile) {
-                result = await this.sendSMS(user.mobile, body);
-              } else {
-                result = { success: false, message: "User mobile not found" };
-              }
+              result =
+                user && user.mobile
+                  ? await this.sendSMS(user.mobile, body)
+                  : { success: false, message: "Mobile not found" };
               break;
             case "EMAIL":
-              // Need email for email
-              const userForEmail = await User.findById(userId);
-              if (userForEmail && userForEmail.email) {
-                result = await this.sendEmail(userForEmail.email, title, body);
-              } else {
-                result = { success: false, message: "User email not found" };
-              }
+              result =
+                user && user.email
+                  ? await this.sendEmail(user.email, title, body)
+                  : { success: false, message: "Email not found" };
               break;
             default:
               result = { success: false, message: "Invalid notification type" };
           }
 
           results.details.push({
-            userId: userId,
+            userId,
             success: result.success,
-            message: result.message || "Notification sent",
+            message: result.message || "Sent",
           });
-
-          if (result.success) {
-            results.success++;
-          } else {
-            results.failed++;
-          }
+          result.success ? results.success++ : results.failed++;
         } catch (error) {
           results.details.push({
-            userId: userId,
+            userId,
             success: false,
             message: error.message,
           });
           results.failed++;
         }
       }
-
       return results;
     } catch (error) {
-      console.error("Error sending bulk notifications:", error);
+      console.error("Error in bulk notification:", error);
       throw new Error("Failed to send bulk notifications");
     }
   }
 
-  // Log notification to database
+  // Log notification
   static async logNotification(userId, type, title, content, metadata = {}) {
     try {
-      const NotificationLog = require("../models/NotificationLog");
-
       await NotificationLog.create({
         userId,
         type,
@@ -340,42 +305,26 @@ class NotificationService {
     }
   }
 
-  // Register device token for push notifications
+  // Register device token
   static async registerDeviceToken(userId, token, platform = "android") {
     try {
-      const User = require("../models/User.model.js");
-
       const user = await User.findById(userId);
-      if (!user) {
-        throw new Error("User not found");
-      }
+      if (!user) throw new Error("User not found");
 
-      // Check if token already exists
       const existingTokenIndex = user.deviceTokens.findIndex(
-        (t) => t.token === token
+        (t) => t.token === token,
       );
 
       if (existingTokenIndex !== -1) {
-        // Update existing token
         user.deviceTokens[existingTokenIndex].platform = platform;
         user.deviceTokens[existingTokenIndex].lastActive = new Date();
       } else {
-        // Add new token
-        user.deviceTokens.push({
-          token,
-          platform,
-          lastActive: new Date(),
-        });
+        user.deviceTokens.push({ token, platform, lastActive: new Date() });
       }
 
       await user.save();
-
-      return {
-        success: true,
-        message: "Device token registered successfully",
-      };
+      return { success: true, message: "Token registered" };
     } catch (error) {
-      console.error("Error registering device token:", error);
       throw new Error("Failed to register device token");
     }
   }
@@ -383,25 +332,17 @@ class NotificationService {
   // Unregister device token
   static async unregisterDeviceToken(userId, token) {
     try {
-      const User = require("../models/User.model.js");
-
       const user = await User.findById(userId);
-      if (!user) {
-        throw new Error("User not found");
-      }
+      if (!user) throw new Error("User not found");
 
       user.deviceTokens = user.deviceTokens.filter((t) => t.token !== token);
       await user.save();
 
-      return {
-        success: true,
-        message: "Device token unregistered successfully",
-      };
+      return { success: true, message: "Token unregistered" };
     } catch (error) {
-      console.error("Error unregistering device token:", error);
       throw new Error("Failed to unregister device token");
     }
   }
 }
 
-module.exports = NotificationService;
+export default NotificationService;

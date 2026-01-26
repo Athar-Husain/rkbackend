@@ -1,162 +1,178 @@
-// const jwt = require("jsonwebtoken");
-// const User = require("../models/User.model.js");
-// const Admin = require("../models/Admin");
-
 import jwt from "jsonwebtoken";
 import User from "../models/User.model.js";
 import Admin from "../models/Admin.js";
+import Store from "../models/Store.model.js";
+import Staff from "../models/Staff.model.js";
+import bcrypt from "bcryptjs";
 
-// Protect routes - user authentication
+// ================================
+// Normal User Protect
+// ================================
 export const protect = async (req, res, next) => {
   let token;
 
-  // Check for token in headers
-  if (
-    req.headers.authorization &&
-    req.headers.authorization.startsWith("Bearer")
-  ) {
+  if (req.headers.authorization?.startsWith("Bearer")) {
     token = req.headers.authorization.split(" ")[1];
-  }
-
-  // Check for token in cookies
-  else if (req.cookies && req.cookies.token) {
+  } else if (req.cookies?.token) {
     token = req.cookies.token;
   }
 
-  if (!token) {
-    return res.status(401).json({
-      success: false,
-      error: "Not authorized to access this route",
-    });
-  }
+  if (!token)
+    return res.status(401).json({ success: false, error: "Not authorized" });
 
   try {
-    // Verify token
     const decoded = jwt.verify(token, process.env.JWT_SECRET);
+    const user = await User.findById(decoded.id).select("-password");
 
-    // Get user from database
-    req.user = await User.findById(decoded.id).select("-password");
+    if (!user)
+      return res.status(401).json({ success: false, error: "User not found" });
 
-    if (!req.user) {
-      return res.status(401).json({
-        success: false,
-        error: "User not found",
-      });
-    }
-
+    req.user = user;
     next();
   } catch (err) {
-    return res.status(401).json({
-      success: false,
-      error: "Not authorized to access this route",
-    });
+    return res
+      .status(401)
+      .json({ success: false, error: "Invalid or expired token" });
   }
 };
 
-// Admin authentication middleware
+// ================================
+// Admin Protect
+// ================================
 export const adminProtect = async (req, res, next) => {
   let token;
 
-  if (
-    req.headers.authorization &&
-    req.headers.authorization.startsWith("Bearer")
-  ) {
+  if (req.headers.authorization?.startsWith("Bearer")) {
     token = req.headers.authorization.split(" ")[1];
-  } else if (req.cookies && req.cookies.adminToken) {
+  } else if (req.cookies?.adminToken) {
     token = req.cookies.adminToken;
   }
 
-  if (!token) {
-    return res.status(401).json({
-      success: false,
-      error: "Not authorized as admin",
-    });
-  }
+  if (!token)
+    return res
+      .status(401)
+      .json({ success: false, error: "Admin not authorized" });
 
   try {
     const decoded = jwt.verify(token, process.env.JWT_SECRET);
-    req.admin = await Admin.findById(decoded.id).select("-password");
+    const admin = await Admin.findById(decoded.id).select("-password");
 
-    if (!req.admin) {
-      return res.status(401).json({
-        success: false,
-        error: "Admin not found",
-      });
+    if (!admin || admin.userType?.toLowerCase() !== "admin") {
+      return res
+        .status(403)
+        .json({ success: false, error: "Access denied: Not an Admin" });
     }
 
+    req.user = admin;
     next();
   } catch (err) {
-    return res.status(401).json({
-      success: false,
-      error: "Not authorized as admin",
-    });
+    return res
+      .status(401)
+      .json({ success: false, error: "Invalid or expired token" });
   }
 };
 
-// Store staff authentication
+// ================================
+// Staff Protect
+// ================================
 export const staffProtect = async (req, res, next) => {
   const { storeId, username, password } = req.body;
 
   if (!storeId || !username || !password) {
-    return res.status(400).json({
-      success: false,
-      error: "Please provide store credentials",
-    });
+    return res
+      .status(400)
+      .json({ success: false, error: "Store credentials required" });
   }
 
   try {
-    const Store = require("../models/Store.model.js");
-    const store = await Store.findById(storeId);
+    const staff = await Staff.findOne({ storeId, username }).select(
+      "+password",
+    );
 
-    if (!store) {
-      return res.status(404).json({
-        success: false,
-        error: "Store not found",
-      });
-    }
+    if (!staff)
+      return res.status(401).json({ success: false, error: "Staff not found" });
 
-    const staff = store.verifyStaff(username, password);
+    const isMatch = await staff.matchPassword(password);
+    if (!isMatch)
+      return res
+        .status(401)
+        .json({ success: false, error: "Invalid password" });
 
-    if (!staff) {
-      return res.status(401).json({
-        success: false,
-        error: "Invalid staff credentials",
-      });
-    }
-
-    req.store = store;
     req.staff = staff;
     next();
   } catch (err) {
-    return res.status(500).json({
-      success: false,
-      error: "Server error",
-    });
+    return res.status(500).json({ success: false, error: "Server error" });
   }
 };
 
-// Role-based authorization
-export const authorize = (...roles) => {
-  return (req, res, next) => {
-    if (!req.user) {
-      return res.status(401).json({
-        success: false,
-        error: "User not authenticated",
-      });
+// ================================
+// Admin or Staff Protect
+// ================================
+export const adminStaffProtect = async (req, res, next) => {
+  let token;
+
+  if (req.headers.authorization?.startsWith("Bearer")) {
+    token = req.headers.authorization.split(" ")[1];
+  } else if (req.cookies?.token) {
+    token = req.cookies.token;
+  }
+
+  if (!token)
+    return res.status(401).json({ success: false, error: "Not authorized" });
+
+  try {
+    const decoded = jwt.verify(token, process.env.JWT_SECRET);
+
+    // Try admin first
+    const admin = await Admin.findById(decoded.id).select("-password");
+    if (admin) {
+      req.user = admin;
+      return next();
     }
 
-    if (!roles.includes(req.user.role)) {
-      return res.status(403).json({
-        success: false,
-        error: `User role ${req.user.role} is not authorized to access this route`,
-      });
+    // Try staff
+    const staff = await Staff.findById(decoded.id).select("-password");
+    if (staff) {
+      req.user = staff;
+      return next();
     }
 
-    next();
-  };
+    return res
+      .status(401)
+      .json({ success: false, error: "Admin/Staff not found" });
+  } catch (err) {
+    return res
+      .status(401)
+      .json({ success: false, error: "Invalid or expired token" });
+  }
 };
 
-// Generate JWT token
+// ================================
+// Store Protect (by storeId in params)
+// ================================
+export const storeProtect = async (req, res, next) => {
+  const { storeId } = req.params;
+
+  if (!storeId)
+    return res
+      .status(400)
+      .json({ success: false, error: "Store ID is required" });
+
+  try {
+    const store = await Store.findById(storeId);
+    if (!store)
+      return res.status(404).json({ success: false, error: "Store not found" });
+
+    req.store = store;
+    next();
+  } catch (err) {
+    return res.status(500).json({ success: false, error: "Server error" });
+  }
+};
+
+// ================================
+// JWT Generator
+// ================================
 export const generateToken = (id, role = "user") => {
   return jwt.sign({ id, role }, process.env.JWT_SECRET, {
     expiresIn: process.env.JWT_EXPIRE || "7d",

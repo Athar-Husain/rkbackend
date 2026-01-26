@@ -28,14 +28,39 @@ const storage = multer.diskStorage({
 
 const upload = multer({ storage });
 
+import {
+  changePassword,
+  forgotPassword,
+  getLoginStatus,
+  getUserProfile,
+  loginAdmin,
+  logoutAdmin,
+  registerAdmin,
+  updateAdmin,
+  verifyOtp,
+} from "../controllers/adminController.js";
+// import { AdminProtect } from "../middleware/auth.js";
+
+// Public Routes
+router.post("/AdminRegister", registerAdmin);
+router.post("/AdminLogin", loginAdmin);
+router.post("/forgotPassword", forgotPassword);
+router.post("/verifyOtp", verifyOtp);
+
 // All routes require admin authentication
 router.use(adminProtect);
+
+router.get("/getAdminLoginStatus", getLoginStatus);
+router.get("/getAdmin", getUserProfile);
+router.put("/updateAdmin", updateAdmin);
+router.patch("/changePassword", changePassword);
+router.post("/AdminLogout", logoutAdmin);
 
 // Dashboard
 router.get("/dashboard", getDashboard);
 
 // Coupon management
-router.post("/coupons", createCoupon);
+router.post("/coupon", createCoupon);
 router.put("/coupons/:id", updateCoupon);
 router.get("/coupons/analytics", getCouponAnalytics);
 

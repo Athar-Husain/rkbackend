@@ -1,32 +1,64 @@
-// const express = require("express");
-// const router = express.Router();
-// const couponController = require('../controllers/couponController');
-// const { protect, staffProtect } = require('../middleware/auth');
-
-//
 import express from "express";
-// import {} from "";
-import { protect, staffProtect } from "../middleware/auth.js";
 import {
-  claimCoupon,
+  createCoupon,
+  getMyCoupons,
   getCouponById,
-  getCoupons,
-  redeemCoupon,
+  claimCoupon,
   validateCoupon,
+  redeemCoupon,
+  getRedemptionHistory,
+  getAllCoupons,
+  updateCoupon,
+  getCouponAnalytics,
 } from "../controllers/couponController.js";
+import { adminProtect, protect, staffProtect } from "../middleware/auth.js";
 
 const router = express.Router();
 
-// User routes
-router.use(protect);
-router.get("/", getCoupons);
-router.get("/:id", getCouponById);
-router.post("/:id/claim", claimCoupon);
+/**
+ * =========================
+ * Admin Routes
+ * =========================
+ */
 
-// Store staff routes
+// Create a coupon
+router.post("/createCoupon", adminProtect, createCoupon);
+
+// Get coupon redemption history
+router.get(
+  "/getRedemptionHistory/:id/redemptions",
+  adminProtect,
+  getRedemptionHistory,
+);
+router.get("/getAllCoupons", adminProtect, getAllCoupons);
+router.patch("/updateCoupon/:id", adminProtect, updateCoupon);
+router.get("/getAnalytics", adminProtect, getCouponAnalytics);
+
+/**
+ * =========================
+ * User Routes
+ * =========================
+ */
+
+// Get all eligible coupons for logged-in user
+router.get("/getMyCoupons", protect, getMyCoupons);
+
+// Get coupon by ID
+router.get("/getCouponById/:id", protect, getCouponById);
+
+// Claim a coupon
+router.post("/claimCoupon/:id/claim", protect, claimCoupon);
+
+/**
+ * =========================
+ * Store Staff Routes
+ * =========================
+ */
+
+// Validate coupon (QR / manual code)
 router.post("/validate", staffProtect, validateCoupon);
-router.post("/redeem", staffProtect, redeemCoupon);
 
-// module.exports = router;
+// Redeem coupon
+router.post("/redeem", staffProtect, redeemCoupon);
 
 export default router;

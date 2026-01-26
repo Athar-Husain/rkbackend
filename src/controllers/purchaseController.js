@@ -1,10 +1,3 @@
-// const Purchase = require("../models/Purchase.model.js");
-// const Product = require("../models/Product.model.js");
-// const User = require("../models/User.model.js");
-// const UserCoupon = require("../models/UserCoupon.model.js");
-// const Referral = require("../models/Referral.model.js");
-// const NotificationService = require("../services/notificationService");
-
 import Purchase from "../models/Purchase.model.js";
 import Product from "../models/Product.model.js";
 import User from "../models/User.model.js";
@@ -635,6 +628,210 @@ export const exportPurchases = async (req, res, next) => {
       // Clean up file after download
       const fs = require("fs");
       fs.unlinkSync(result.filePath);
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+// @desc    Get logged-in user's purchase history
+// @route   GET /api/purchases/my
+// @access  Private (User)
+export const getMyPurchases = async (req, res, next) => {
+  try {
+    const { page = 1, limit = 10 } = req.query;
+
+    const purchases = await Purchase.find({ userId: req.user.id })
+      .populate("storeId", "name location.city location.area")
+      .sort({ createdAt: -1 })
+      .skip((page - 1) * limit)
+      .limit(Number(limit));
+
+    const total = await Purchase.countDocuments({ userId: req.user.id });
+
+    res.json({
+      success: true,
+      total,
+      page: Number(page),
+      purchases,
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+// @desc    Get purchases for a store
+// @route   GET /api/purchases/store/:storeId
+// @access  Private (Store staff / Admin)
+export const getStorePurchases = async (req, res, next) => {
+  try {
+    const purchases = await Purchase.find({
+      storeId: req.params.storeId,
+    })
+      .populate("userId", "name mobile")
+      .sort({ createdAt: -1 });
+
+    res.json({
+      success: true,
+      count: purchases.length,
+      purchases,
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+// @desc    Get all purchases
+// @route   GET /api/purchases
+// @access  Private (Admin)
+export const getAllPurchases = async (req, res, next) => {
+  try {
+    const purchases = await Purchase.find()
+      .populate("storeId", "name location.city")
+      .populate("userId", "name mobile")
+      .sort({ createdAt: -1 });
+
+    res.json({
+      success: true,
+      count: purchases.length,
+      purchases,
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+// @desc    Cancel a purchase
+// @route   PUT /api/purchases/:id/cancel
+// @access  Private (Admin / Store staff)
+export const cancelPurchase = async (req, res, next) => {
+  try {
+    const purchase = await Purchase.findById(req.params.id);
+
+    if (!purchase) {
+      return res
+        .status(404)
+        .json({ success: false, error: "Purchase not found" });
+    }
+
+    if (purchase.status !== "COMPLETED") {
+      return res.status(400).json({
+        success: false,
+        error: "Only completed purchases can be cancelled",
+      });
+    }
+
+    purchase.status = "CANCELLED";
+    await purchase.save();
+
+    res.json({
+      success: true,
+      message: "Purchase cancelled successfully",
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+// @desc    Refund a purchase
+// @route   PUT /api/purchases/:id/refund
+// @access  Private (Admin)
+export const refundPurchase = async (req, res, next) => {
+  try {
+    const purchase = await Purchase.findById(req.params.id);
+
+    if (!purchase) {
+      return res
+        .status(404)
+        .json({ success: false, error: "Purchase not found" });
+    }
+
+    purchase.status = "REFUNDED";
+    await purchase.save();
+
+    res.json({
+      success: true,
+      message: "Purchase refunded successfully",
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+// @desc    Update feedback
+// @route   PUT /api/purchases/:id/feedback
+// @access  Private (User)
+export const updateFeedback = async (req, res, next) => {
+  try {
+    const { feedback } = req.body;
+
+    const purchase = await Purchase.findOne({
+      _id: req.params.id,
+      userId: req.user.id,
+    });
+
+    if (!purchase) {
+      return res
+        .status(404)
+        .json({ success: false, error: "Purchase not found" });
+    }
+
+    purchase.feedback = feedback;
+    await purchase.save();
+
+    res.json({
+      success: true,
+      message: "Feedback updated",
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+// @desc    Get user spending summary
+// @route   GET /api/purchases/report/user/:userId
+// @access  Private (Admin)
+export const getUserSpendingReport = async (req, res, next) => {
+  try {
+    const report = await Purchase.aggregate([
+      { $match: { userId: new mongoose.Types.ObjectId(req.params.userId) } },
+      {
+        $group: {
+          _id: "$userId",
+          totalSpent: { $sum: "$finalAmount" },
+          totalOrders: { $sum: 1 },
+          averageOrder: { $avg: "$finalAmount" },
+        },
+      },
+    ]);
+
+    res.json({
+      success: true,
+      report: report[0] || {},
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+// @desc    Delete purchase (hard delete)
+// @route   DELETE /api/purchases/:id
+// @access  Private (Admin)
+export const deletePurchase = async (req, res, next) => {
+  try {
+    const purchase = await Purchase.findById(req.params.id);
+
+    if (!purchase) {
+      return res
+        .status(404)
+        .json({ success: false, error: "Purchase not found" });
+    }
+
+    await purchase.deleteOne();
+
+    res.json({
+      success: true,
+      message: "Purchase deleted permanently",
     });
   } catch (error) {
     next(error);

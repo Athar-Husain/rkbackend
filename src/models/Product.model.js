@@ -19,18 +19,7 @@ const productSchema = new mongoose.Schema(
     category: {
       type: String,
       required: true,
-      enum: [
-        "MOBILE",
-        "TELEVISION",
-        "AC",
-        "REFRIGERATOR",
-        "WASHING_MACHINE",
-        "AUDIO",
-        "KITCHEN_APPLIANCE",
-        "LAPTOP",
-        "CAMERA",
-        "ACCESSORY",
-      ],
+      lowercase: true,
     },
     subcategory: String,
     brand: {
@@ -150,7 +139,34 @@ const productSchema = new mongoose.Schema(
 );
 
 // Generate slug before saving
-productSchema.pre("save", function (next) {
+// productSchema.pre("save", function (next) {
+//   if (!this.slug) {
+//     this.slug =
+//       `${this.brand.toLowerCase()}-${this.model.toLowerCase()}-${this.sku.toLowerCase()}`.replace(
+//         /\s+/g,
+//         "-",
+//       );
+//   }
+
+//   // Calculate discount percentage
+//   if (this.mrp && this.sellingPrice) {
+//     this.discountPercentage = Math.round(
+//       ((this.mrp - this.sellingPrice) / this.mrp) * 100,
+//     );
+//   }
+
+//   // Calculate overall stock
+//   if (this.availableInStores && this.availableInStores.length > 0) {
+//     this.overallStock = this.availableInStores.reduce(
+//       (total, store) => total + (store.stock || 0),
+//       0,
+//     );
+//   }
+
+//   next();
+// });
+
+productSchema.pre("save", function () {
   if (!this.slug) {
     this.slug =
       `${this.brand.toLowerCase()}-${this.model.toLowerCase()}-${this.sku.toLowerCase()}`.replace(
@@ -159,22 +175,18 @@ productSchema.pre("save", function (next) {
       );
   }
 
-  // Calculate discount percentage
   if (this.mrp && this.sellingPrice) {
     this.discountPercentage = Math.round(
       ((this.mrp - this.sellingPrice) / this.mrp) * 100,
     );
   }
 
-  // Calculate overall stock
   if (this.availableInStores && this.availableInStores.length > 0) {
     this.overallStock = this.availableInStores.reduce(
       (total, store) => total + (store.stock || 0),
       0,
     );
   }
-
-  next();
 });
 
 // Virtual for formatted price

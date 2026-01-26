@@ -1,36 +1,46 @@
-// const express = require("express");
-// const userController = require("../controllers/userController");
-// const { protect } = require("../middleware/auth");
-
 import express from "express";
-import { protect } from "../middleware/auth.js";
 import {
-  deleteAccount,
-  getAddresses,
-  getCouponById,
+  deleteUserByAdmin,
+  getAllUsers,
   getProfile,
-  getPurchaseById,
-  getPurchaseHistory,
-  getReferralInfo,
-  getUserCoupons,
+  getUserById,
+  registerUser,
   updatePreferences,
+  updateProfile,
+  updateUserByAdmin,
 } from "../controllers/userController.js";
+import { adminProtect, protect } from "../middleware/auth.js";
 
 const router = express.Router();
 
-// All routes require authentication
-router.use(protect);
+// -------------------- PUBLIC ROUTES -------------------- //
+// User registration (with optional referral code)
+router.post("/register", registerUser);
 
-router.get("/profile", getProfile);
-router.get("/coupons", getUserCoupons);
-router.get("/coupons/:id", getCouponById);
-router.get("/purchases", getPurchaseHistory);
-router.get("/purchases/:id", getPurchaseById);
-router.get("/referral", getReferralInfo);
-router.put("/preferences", updatePreferences);
-router.get("/addresses", getAddresses);
-router.delete("/account", deleteAccount);
+// -------------------- PROTECTED ROUTES -------------------- //
+// Get logged-in user profile
+router.get("/getProfile", protect, getProfile);
 
-// module.exports = router;
+// Update logged-in user profile
+router.patch("/updateProfile", protect, updateProfile);
+
+// Update user preferences
+router.patch("/updatePreferences", protect, updatePreferences);
+
+// Delete / deactivate account
+// router.delete("/deleteAccount", protect, deleteAccount);
+
+// -------------------- ADMIN ROUTES -------------------- //
+// Get all users with pagination
+router.get("/getAllUsers", adminProtect, getAllUsers);
+
+// Get specific user by ID
+router.get("/getUserById/:id", adminProtect, getUserById);
+
+// Update user by admin
+router.patch("/updateUserByAdmin/:id", adminProtect, updateUserByAdmin);
+
+// Delete user by admin
+router.delete("/deleteUserByAdmin/:id", adminProtect, deleteUserByAdmin);
 
 export default router;

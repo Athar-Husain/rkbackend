@@ -20,6 +20,9 @@ import storeRoutes from "./routes/stores.js";
 import purchaseRoutes from "./routes/purchases.js";
 // import referralRoutes from "./routes/referrals.js";
 import adminRoutes from "./routes/admin.js";
+import staffRoutes from "./routes/staff.js";
+import locationRoutes from "./routes/cityArea.js";
+// import adminAuthRoutes from "./routes/adminAuth.route.js";
 import analyticsRoutes from "./routes/analytics.js";
 
 // Import middleware
@@ -80,12 +83,15 @@ if (process.env.NODE_ENV === "development") {
 app.use("/uploads", express.static(path.join(__dirname, "../uploads")));
 
 // API Routes
+// app.use("/api/adminAuth", adminAuthRoutes);
 app.use("/api/auth", authRoutes);
+app.use("/api/staff", staffRoutes);
 app.use("/api/users", userRoutes);
 app.use("/api/products", productRoutes);
 app.use("/api/coupons", couponRoutes);
 app.use("/api/stores", storeRoutes);
-app.use("/api/purchases", purchaseRoutes);
+app.use("/api/purchase", purchaseRoutes);
+app.use("/api/locations", locationRoutes);
 // app.use("/api/referrals", referralRoutes);
 app.use("/api/admin", adminRoutes);
 app.use("/api/analytics", analyticsRoutes);

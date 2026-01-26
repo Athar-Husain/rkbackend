@@ -8,12 +8,14 @@ const cityAreaSchema = new mongoose.Schema(
       required: [true, "City name is required"],
       trim: true,
       unique: true,
+      toLowerCase: true,
     },
     areas: [
       {
         name: {
           type: String,
           required: true,
+          toLowerCase: true,
           trim: true,
         },
         pincodes: [String],

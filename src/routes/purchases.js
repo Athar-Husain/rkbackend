@@ -1,33 +1,96 @@
-// const express = require("express");
-// const router = express.Router();
-// const purchaseController = require("../controllers/purchaseController");
-// const { protect, staffProtect, adminProtect } = require("../middleware/auth");
-
 import express from "express";
-import { adminProtect, protect, staffProtect } from "../middleware/auth.js";
-import {
-  addRating,
-  exportPurchases,
-  getPurchaseById,
-  getStoreSalesReport,
-  recordPurchase,
-  updatePurchaseStatus,
-} from "../controllers/purchaseController.js";
 const router = express.Router();
 
-// User routes
-router.use(protect);
-router.get("/:id", getPurchaseById);
-router.post("/:id/rating", addRating);
+import {
+  recordPurchase,
+  getPurchaseById,
+  getMyPurchases,
+  getStorePurchases,
+  getAllPurchases,
+  updatePurchaseStatus,
+  cancelPurchase,
+  refundPurchase,
+  addRating,
+  updateFeedback,
+  getStoreSalesReport,
+  getUserSpendingReport,
+  exportPurchases,
+  deletePurchase,
+} from "../controllers/purchaseController.js";
+import {
+  adminProtect,
+  adminStaffProtect,
+  protect,
+  staffProtect,
+} from "../middleware/auth.js";
 
-// Store staff routes
-router.post("/", staffProtect, recordPurchase);
-router.put("/:id/status", staffProtect, updatePurchaseStatus);
-router.get("/report/store/:storeId", staffProtect, getStoreSalesReport);
+// import { protect } from "../middlewares/auth.middleware.js";
+// import {
+// admin,
+// storeStaff,
+// adminOrStaff,
+// } from "../middlewares/role.middleware.js";
 
-// Admin routes
+/* =========================
+   USER ROUTES
+========================= */
+
+// Get logged-in user's purchases
+router.get("/getMyPurchases", protect, getMyPurchases);
+
+// Get purchase by ID (user or staff)
+router.get("/getPurchaseById/:id", protect, getPurchaseById);
+
+// Add rating
+router.post("/addRating/:id/rating", protect, addRating);
+
+// Update feedback
+router.patch("/updateFeedback/:id/feedback", protect, updateFeedback);
+
+/* =========================
+   STORE STAFF ROUTES
+========================= */
+
+// Record purchase (POS)
+router.post("/recordPurchase", staffProtect, recordPurchase);
+
+// Get store purchases
+router.get("/store/:storeId", adminStaffProtect, getStorePurchases);
+
+// Update purchase status
+router.patch(
+  "/updatePurchaseStatus/:id/status",
+  adminStaffProtect,
+  updatePurchaseStatus,
+);
+
+// Cancel purchase
+router.patch("/cancelPurchase/:id/cancel", adminStaffProtect, cancelPurchase);
+
+/* =========================
+   REPORTS
+========================= */
+
+// Store sales report
+router.get("/report/store/:storeId", adminStaffProtect, getStoreSalesReport);
+
+// User spending report
+router.get("/report/user/:userId", adminProtect, getUserSpendingReport);
+
+/* =========================
+   ADMIN ROUTES
+========================= */
+
+// Get all purchases
+router.get("/getAllPurchases", adminProtect, getAllPurchases);
+
+// Refund purchase
+router.patch("/refundPurchase/:id/refund", adminProtect, refundPurchase);
+
+// Export purchases to Excel
 router.get("/export", adminProtect, exportPurchases);
 
-// module.exports = router;
-export default router;
+// Delete purchase (hard delete)
+router.delete("/deletePurchase/:id", adminProtect, deletePurchase);
 
+export default router;

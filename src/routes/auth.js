@@ -23,6 +23,8 @@ import {
   registerDevice,
   resetPassword,
   sendOTP,
+  signin,
+  signup,
   updateProfile,
   validateReferralCode,
   verifyOTP,
@@ -31,6 +33,9 @@ import {
 const router = express.Router();
 
 // Public routes
+// router.post("/admin-login", );
+router.post("/signin", signin);
+router.post("/signup", signup);
 router.post("/send-otp", sendOTP);
 router.post("/verify-otp", validate(validateOTP), verifyOTP);
 router.post("/forgot-password", forgotPassword);

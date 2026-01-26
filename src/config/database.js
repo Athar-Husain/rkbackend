@@ -1,22 +1,12 @@
-// const mongoose = require("mongoose");
-import mongoose from "mongoose";
+// config/db.js
+import { connect } from "mongoose";
 
 const connectDB = async () => {
   try {
-    console.log("process.env.MONGODB_URI", process.env.MONGODB_URI);
-    const conn = await mongoose.connect(process.env.MONGODB_URI, {
-      useNewUrlParser: true,
-      useUnifiedTopology: true,
-    });
-
-    console.log(`MongoDB Connected: ${conn.connection.host}`);
-
-    // Create indexes for better performance
-    await createIndexes();
-
-    return conn;
+    const conn = await connect(process.env.MONGO_URI, {});
+    console.log(`MongoDB Connected from DB file : ${conn.connection.host}`);
   } catch (error) {
-    console.error(`Error: ${error.message}`);
+    console.error(`Error connecting to MongoDB: ${error.message}`);
     process.exit(1);
   }
 };
@@ -66,7 +56,5 @@ const createIndexes = async () => {
 
   console.log("Database indexes created successfully");
 };
-
-// module.exports = connectDB;
 
 export default connectDB;

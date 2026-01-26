@@ -6,9 +6,11 @@ import bcrypt from "bcryptjs";
 
 const adminSchema = new mongoose.Schema(
   {
-    username: {
+    firstName: { type: String, required: true },
+    lastName: { type: String },
+    userId: {
       type: String,
-      required: [true, "Username is required"],
+      // required: [true, "Username is required"],
       unique: true,
       trim: true,
     },
@@ -24,14 +26,16 @@ const adminSchema = new mongoose.Schema(
       required: [true, "Password is required"],
       minlength: 6,
     },
-    name: {
+    userType: {
       type: String,
-      required: [true, "Name is required"],
+      lowercase: true,
+      default: "admin",
     },
     role: {
       type: String,
-      enum: ["SUPER_ADMIN", "ADMIN", "MANAGER"],
-      default: "ADMIN",
+      // enum: ["SUPERADMIN", "ADMIN", "MANAGER"],
+      lowercase: true,
+      default: "admin",
     },
     permissions: [
       {
@@ -55,16 +59,22 @@ const adminSchema = new mongoose.Schema(
 );
 
 // Hash password before saving
-adminSchema.pre("save", async function (next) {
-  if (!this.isModified("password")) return next();
+// adminSchema.pre("save", async function (next) {
+//   if (!this.isModified("password")) return next();
 
-  try {
-    const salt = await bcrypt.genSalt(10);
-    this.password = await bcrypt.hash(this.password, salt);
-    next();
-  } catch (error) {
-    next(error);
-  }
+//   try {
+//     const salt = await bcrypt.genSalt(10);
+//     this.password = await bcrypt.hash(this.password, salt);
+//     next();
+//   } catch (error) {
+//     next(error);
+//   }
+// });
+adminSchema.pre("save", async function () {
+  if (!this.isModified("password")) return;
+
+  const salt = await bcrypt.genSalt(10);
+  this.password = await bcrypt.hash(this.password, salt);
 });
 
 // Compare password method

@@ -1,8 +1,3 @@
-// const Coupon = require("../models/Coupon.model.js");
-// const UserCoupon = require("../models/UserCoupon.model.js");
-// const TargetingService = require("../services/targetingService");
-// const NotificationService = require("../services/notificationService");
-
 import Coupon from "../models/Coupon.model.js";
 import UserCoupon from "../models/UserCoupon.model.js";
 import {
@@ -11,10 +6,114 @@ import {
 } from "../services/targetingService.js";
 import NotificationService from "../services/notificationService.js";
 
+/**
+ * @desc    Create coupon
+ */
+export const createCoupon = async (req, res, next) => {
+  try {
+    const data = req.body;
+
+    const exists = await Coupon.findOne({
+      code: data.code.toUpperCase(),
+    });
+
+    if (exists) {
+      return res.status(400).json({
+        success: false,
+        error: "Coupon code already exists",
+      });
+    }
+
+    const coupon = await Coupon.create({
+      ...data,
+      code: data.code.toUpperCase(),
+      status: "ACTIVE",
+      createdBy: req.admin?._id || null,
+    });
+
+    let assignment = null;
+    if (
+      coupon.targeting.type !== "INDIVIDUAL" ||
+      coupon.targeting.users?.length
+    ) {
+      assignment = await assignCouponToEligibleUsers(coupon._id);
+    }
+
+    res.status(201).json({
+      success: true,
+      coupon,
+      assignment,
+      message: "Coupon created successfully",
+    });
+  } catch (err) {
+    next(err);
+  }
+};
+
+export const getCouponAnalytics = async (req, res, next) => {
+  try {
+    const coupons = await Coupon.find().sort({ createdAt: -1 });
+
+    const analytics = await Promise.all(
+      coupons.map(async (c) => ({
+        coupon: c,
+        redemptions: await UserCoupon.countDocuments({
+          couponId: c._id,
+          status: "USED",
+        }),
+      })),
+    );
+
+    res.json({ success: true, analytics });
+  } catch (err) {
+    next(err);
+  }
+};
+
+/**
+ * @desc Update coupon
+ */
+export const updateCoupon = async (req, res, next) => {
+  try {
+    const coupon = await Coupon.findById(req.params.id);
+    if (!coupon) {
+      return res
+        .status(404)
+        .json({ success: false, error: "Coupon not found" });
+    }
+
+    Object.keys(req.body).forEach((key) => {
+      coupon[key] = req.body[key] ?? coupon[key];
+    });
+
+    await coupon.save();
+
+    res.json({
+      success: true,
+      coupon,
+      message: "Coupon updated successfully",
+    });
+  } catch (err) {
+    next(err);
+  }
+};
+
 // @desc    Get coupons for logged-in user
 // @route   GET /api/coupons
 // @access  Private
-export const getCoupons = async (req, res, next) => {
+export const getAllCoupons = async (req, res, next) => {
+  try {
+    const coupons = await Coupon.find().sort({ createdAt: -1 });
+    res.json({ success: true, count: coupons.length, coupons });
+  } catch (err) {
+    next(err);
+  }
+};
+
+// @desc    Get coupons for logged-in user
+// @route   GET /api/coupons
+// @access  Private
+export const getMyCoupons = async (req, res, next) => {
   try {
     const { category, type, page = 1, limit = 20 } = req.query;
 

@@ -1,9 +1,6 @@
-// const express = require("express");
-// const router = express.Router();
-// const productController = require("../controllers/productController");
-
 import express from "express";
 import {
+  addProduct,
   checkAvailability,
   compareProducts,
   getFeaturedProducts,
@@ -11,18 +8,21 @@ import {
   getProducts,
   getProductsByCategory,
   searchProducts,
+  updateProduct,
 } from "../controllers/productController.js";
+import { adminProtect } from "../middleware/auth.js";
 const router = express.Router();
 
 // Public routes
-router.get("/", getProducts);
-router.get("/featured", getFeaturedProducts);
+router.get("/getProducts", getProducts);
+router.get("/getFeaturedProducts", getFeaturedProducts);
 router.get("/search/:query", searchProducts);
 router.get("/category/:category", getProductsByCategory);
-router.get("/:id", getProductById);
-router.get("/:id/availability", checkAvailability);
+router.get("/getProductById/:id", getProductById);
+router.get("/checkAvailability/:id/availability", checkAvailability);
 router.post("/compare", compareProducts);
 
-// module.exports = router;
+router.post("/addproduct", adminProtect, addProduct);
+router.patch("/updateProduct/:id", adminProtect, updateProduct);
 
 export default router;

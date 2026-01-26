@@ -1,4 +1,3 @@
-// const mongoose = require('mongoose');
 import mongoose from "mongoose";
 
 const purchaseSchema = new mongoose.Schema(
@@ -16,7 +15,7 @@ const purchaseSchema = new mongoose.Schema(
       ref: "Store",
       required: true,
     },
-    staffId: String, // Staff username who processed
+    staffId: String,
 
     // Items Purchased
     items: [
@@ -43,7 +42,6 @@ const purchaseSchema = new mongoose.Schema(
         },
         totalPrice: {
           type: Number,
-          required: true,
           min: 0,
         },
         specifications: {
@@ -56,7 +54,6 @@ const purchaseSchema = new mongoose.Schema(
     // Pricing
     subtotal: {
       type: Number,
-      required: true,
       min: 0,
     },
     discount: {
@@ -71,7 +68,6 @@ const purchaseSchema = new mongoose.Schema(
     },
     finalAmount: {
       type: Number,
-      required: true,
       min: 0,
     },
 
@@ -112,7 +108,7 @@ const purchaseSchema = new mongoose.Schema(
       default: Date.now,
     },
 
-    // Delivery/Installation (if applicable)
+    // Delivery / Installation
     delivery: {
       type: {
         type: String,
@@ -134,7 +130,7 @@ const purchaseSchema = new mongoose.Schema(
 
     // Warranty Information
     warranty: {
-      period: String, // "1 year", "2 years"
+      period: String,
       startDate: Date,
       endDate: Date,
       cardNumber: String,
@@ -154,13 +150,6 @@ const purchaseSchema = new mongoose.Schema(
       max: 5,
     },
     feedback: String,
-
-    // Metadata
-    createdAt: {
-      type: Date,
-      default: Date.now,
-    },
-    updatedAt: Date,
   },
   {
     timestamps: true,
@@ -169,17 +158,20 @@ const purchaseSchema = new mongoose.Schema(
   },
 );
 
-// Generate invoice number before saving
-purchaseSchema.pre("save", function (next) {
+/* =========================
+   PRE SAVE (NO next())
+========================= */
+purchaseSchema.pre("save", async function () {
+  /* ---------- INVOICE NUMBER ---------- */
   if (!this.invoiceNumber) {
     const date = new Date();
-    const year = date.getFullYear().toString().substr(-2);
-    const month = (date.getMonth() + 1).toString().padStart(2, "0");
+    const year = date.getFullYear().toString().slice(-2);
+    const month = String(date.getMonth() + 1).padStart(2, "0");
     const random = Math.floor(1000 + Math.random() * 9000);
     this.invoiceNumber = `RKINV${year}${month}${random}`;
   }
 
-  // Calculate item totals if not provided
+  /* ---------- ITEM TOTALS ---------- */
   if (this.items && this.items.length > 0) {
     this.items.forEach((item) => {
       if (!item.totalPrice) {
@@ -187,43 +179,44 @@ purchaseSchema.pre("save", function (next) {
       }
     });
 
-    // Calculate subtotal
-    if (!this.subtotal) {
+    /* ---------- SUBTOTAL ---------- */
+    if (this.subtotal == null) {
       this.subtotal = this.items.reduce(
         (sum, item) => sum + item.totalPrice,
         0,
       );
     }
 
-    // Calculate final amount
-    if (!this.finalAmount) {
+    /* ---------- FINAL AMOUNT ---------- */
+    if (this.finalAmount == null) {
       this.finalAmount = this.subtotal - (this.discount || 0) + (this.tax || 0);
     }
   }
-
-  next();
 });
 
-// Virtual for formatted amounts
+/* =========================
+   VIRTUALS
+========================= */
 purchaseSchema.virtual("formattedSubtotal").get(function () {
-  return `₹${this.subtotal.toLocaleString("en-IN")}`;
+  return `₹${this.subtotal?.toLocaleString("en-IN") ?? 0}`;
 });
 
 purchaseSchema.virtual("formattedDiscount").get(function () {
-  return `₹${this.discount.toLocaleString("en-IN")}`;
+  return `₹${this.discount?.toLocaleString("en-IN") ?? 0}`;
 });
 
 purchaseSchema.virtual("formattedFinalAmount").get(function () {
-  return `₹${this.finalAmount.toLocaleString("en-IN")}`;
+  return `₹${this.finalAmount?.toLocaleString("en-IN") ?? 0}`;
 });
 
-// Virtual for savings percentage
 purchaseSchema.virtual("savingsPercentage").get(function () {
-  if (this.subtotal === 0) return 0;
+  if (!this.subtotal) return 0;
   return Math.round((this.discount / this.subtotal) * 100);
 });
 
-// Method to add item to purchase
+/* =========================
+   METHODS
+========================= */
 purchaseSchema.methods.addItem = async function (
   productId,
   quantity,
@@ -243,22 +236,24 @@ purchaseSchema.methods.addItem = async function (
     category: product.category,
     brand: product.brand,
     model: product.model,
-    quantity: quantity,
-    unitPrice: unitPrice,
+    quantity,
+    unitPrice,
     totalPrice: unitPrice * quantity,
     specifications: product.specifications,
   });
 
-  // Recalculate totals
   this.subtotal = this.items.reduce((sum, item) => sum + item.totalPrice, 0);
+
   this.finalAmount = this.subtotal - (this.discount || 0) + (this.tax || 0);
 
   return this.save();
 };
 
-// Static method to get user's purchase history
+/* =========================
+   STATICS
+========================= */
 purchaseSchema.statics.getUserHistory = function (userId, options = {}) {
-  const query = { userId: userId };
+  const query = { userId };
 
   if (options.startDate || options.endDate) {
     query.createdAt = {};
@@ -278,19 +273,18 @@ purchaseSchema.statics.getUserHistory = function (userId, options = {}) {
     .limit(options.limit || 20);
 };
 
-// Static method to get store's sales report
 purchaseSchema.statics.getStoreReport = function (storeId, startDate, endDate) {
-  const matchStage = {
-    storeId: mongoose.Types.ObjectId(storeId),
-    status: "COMPLETED",
-    createdAt: {
-      $gte: new Date(startDate),
-      $lte: new Date(endDate),
-    },
-  };
-
   return this.aggregate([
-    { $match: matchStage },
+    {
+      $match: {
+        storeId: new mongoose.Types.ObjectId(storeId),
+        status: "COMPLETED",
+        createdAt: {
+          $gte: new Date(startDate),
+          $lte: new Date(endDate),
+        },
+      },
+    },
     {
       $group: {
         _id: {
@@ -309,5 +303,4 @@ purchaseSchema.statics.getStoreReport = function (storeId, startDate, endDate) {
 };
 
 const Purchase = mongoose.model("Purchase", purchaseSchema);
-// module.exports = Purchase;
 export default Purchase;

@@ -1,4 +1,3 @@
-// const mongoose = require("mongoose");
 import mongoose from "mongoose";
 
 const storeSchema = new mongoose.Schema(
@@ -11,61 +10,33 @@ const storeSchema = new mongoose.Schema(
     code: {
       type: String,
       unique: true,
+      sparse: true,
       uppercase: true,
-      required: true,
     },
     type: {
       type: String,
       enum: ["MAIN", "BRANCH", "SUB_BRANCH"],
       default: "BRANCH",
     },
-
-    // Location
     location: {
-      address: {
-        type: String,
-        required: true,
-      },
-      city: {
-        type: String,
-        required: true,
-      },
-      area: {
-        type: String,
-        required: true,
-      },
+      address: { type: String, required: true },
+      area: { type: String, required: true }, // Logic: "jagruti nagar" -> "JAGRUTI-NAGAR"
+      city: { type: String, required: true }, // Logic: "ballari" -> "BALLARI"
+      state: { type: String, required: true, default: "KARNATAKA" },
       pincode: String,
-      coordinates: {
-        lat: Number,
-        lng: Number,
-      },
+      coordinates: { lat: Number, lng: Number },
       landmark: String,
+      gmapsLink: String,
     },
-
-    // Contact Information
     contact: {
-      phone: {
-        type: String,
-        required: true,
-      },
+      phone: { type: String, required: true },
       whatsapp: String,
       email: String,
-      manager: {
-        name: String,
-        phone: String,
-      },
+      managerName: String,
     },
-
-    // Timings
     timings: {
-      open: {
-        type: String,
-        default: "10:00 AM",
-      },
-      close: {
-        type: String,
-        default: "8:00 PM",
-      },
+      open: { type: String, default: "10:00 AM" },
+      close: { type: String, default: "08:00 PM" },
       workingDays: {
         type: [String],
         default: [
@@ -78,99 +49,42 @@ const storeSchema = new mongoose.Schema(
         ],
       },
     },
-
-    // Staff Accounts (Simple credentials)
-    staffAccounts: [
-      {
-        username: String,
-        password: String,
-        name: String,
-        role: {
-          type: String,
-          enum: ["STAFF", "MANAGER"],
-          default: "STAFF",
-        },
-        isActive: {
-          type: Boolean,
-          default: true,
-        },
-        lastLogin: Date,
-      },
-    ],
-
-    // Status
     isActive: {
       type: Boolean,
       default: true,
     },
-
-    // Metadata
-    createdAt: {
-      type: Date,
-      default: Date.now,
-    },
-    updatedAt: Date,
   },
-  {
-    timestamps: true,
-  },
+  { timestamps: true },
 );
 
-// Generate store code before saving
-storeSchema.pre("save", function (next) {
-  if (!this.code) {
-    const cityCode = this.location.city.substring(0, 3).toUpperCase();
-    const areaCode = this.location.area.substring(0, 3).toUpperCase();
-    const randomNum = Math.floor(100 + Math.random() * 900);
-    this.code = `${cityCode}${areaCode}${randomNum}`;
+/**
+ * 🚀 MODERN ASYNC PRE-SAVE HOOK
+ * Handles String Formatting & Store Code Generation
+ */
+storeSchema.pre("save", async function () {
+  if (this.location) {
+    // 1. Format City: Trim and Uppercase
+    if (this.location.city) {
+      this.location.city = this.location.city.trim().toUpperCase();
+    }
+
+    // 2. Format Area: Trim, Uppercase, and Replace Spaces with Hyphens
+    if (this.location.area) {
+      this.location.area = this.location.area
+        .trim()
+        .toUpperCase()
+        .replace(/\s+/g, "-"); // Replaces one or more spaces with a single hyphen
+    }
+
+    // 3. Generate Store Code if not provided
+    if (!this.code && this.location.city && this.location.area) {
+      const cityPart = this.location.city.substring(0, 3);
+      const areaPart = this.location.area.substring(0, 3);
+      const randomNum = Math.floor(100 + Math.random() * 900);
+      this.code = `${cityPart}-${areaPart}-${randomNum}`;
+    }
   }
-  next();
 });
 
-// Method to add staff account
-storeSchema.methods.addStaffAccount = function (
-  username,
-  password,
-  name,
-  role = "STAFF",
-) {
-  this.staffAccounts.push({
-    username,
-    password, // In production, hash this password
-    name,
-    role,
-    isActive: true,
-  });
-  return this.save();
-};
-
-// Method to verify staff credentials
-storeSchema.methods.verifyStaff = function (username, password) {
-  const staff = this.staffAccounts.find(
-    (acc) =>
-      acc.username === username && acc.password === password && acc.isActive,
-  );
-  return staff || null;
-};
-
-// Static method to find stores by city
-storeSchema.statics.findByCity = function (city) {
-  return this.find({
-    "location.city": new RegExp(`^${city}$`, "i"),
-    isActive: true,
-  }).sort({ "location.area": 1 });
-};
-
-// Static method to find stores by area
-storeSchema.statics.findByArea = function (city, area) {
-  return this.find({
-    "location.city": new RegExp(`^${city}$`, "i"),
-    "location.area": new RegExp(`^${area}$`, "i"),
-    isActive: true,
-  });
-};
-
 const Store = mongoose.model("Store", storeSchema);
-// module.exports = Store;
-
 export default Store;

@@ -1,5 +1,3 @@
-// const mongoose = require("mongoose");
-// const bcrypt = require("bcryptjs");
 import mongoose from "mongoose";
 import bcrypt from "bcryptjs";
 
@@ -19,8 +17,20 @@ const userSchema = new mongoose.Schema(
     },
     email: {
       type: String,
+      required: [true, "Email is required"],
+      unique: true,
       lowercase: true,
       trim: true,
+      match: [
+        /^\w+([\.-]?\w+)*@\w+([\.-]?\w+)*(\.\w{2,3})+$/,
+        "Please enter a valid email",
+      ],
+    },
+    password: {
+      type: String,
+      required: [true, "Password is required"],
+      minlength: [6, "Password must be at least 6 characters"],
+      select: false, // Hidden by default in queries
     },
     city: {
       type: String,
@@ -34,8 +44,6 @@ const userSchema = new mongoose.Schema(
       type: mongoose.Schema.Types.ObjectId,
       ref: "Store",
     },
-
-    // Referral System
     referralCode: {
       type: String,
       unique: true,
@@ -45,92 +53,82 @@ const userSchema = new mongoose.Schema(
       type: mongoose.Schema.Types.ObjectId,
       ref: "User",
     },
-
-    // Wallet (Simplified)
     walletBalance: {
       type: Number,
       default: 0,
     },
-
-    // Device info for push notifications
+    userType: { type: String, default: "Customer" },
+    // deviceTokens: [
+    //   {
+    //     token: String,
+    //     platform: {
+    //       type: String,
+    //       enum: ["android", "ios", "web"],
+    //     },
+    //     lastActive: Date,
+    //   },
+    // ],
     deviceTokens: [
       {
         token: String,
         platform: {
           type: String,
           enum: ["android", "ios", "web"],
+          default: "android",
         },
-        lastActive: Date,
+        lastUsed: { type: Date, default: Date.now },
       },
     ],
 
-    // Preferences
     preferences: {
-      notifications: {
-        type: Boolean,
-        default: true,
-      },
-      smsAlerts: {
-        type: Boolean,
-        default: true,
-      },
+      notifications: { type: Boolean, default: true },
+      smsAlerts: { type: Boolean, default: true },
     },
-
-    // Status
-    isActive: {
-      type: Boolean,
-      default: true,
-    },
-    isVerified: {
-      type: Boolean,
-      default: false,
-    },
-
-    // Timestamps
+    isActive: { type: Boolean, default: true },
+    isVerified: { type: Boolean, default: false },
     lastLogin: Date,
-    createdAt: {
-      type: Date,
-      default: Date.now,
-    },
-    updatedAt: Date,
+    passwordResetAt: Date,
   },
   {
     timestamps: true,
   },
 );
 
-// Generate referral code before saving
-userSchema.pre("save", async function (next) {
+// --- HOOKS ---
+
+// Hash password before saving
+// userSchema.pre("save", async function (next) {
+//   if (!this.isModified("password")) {
+//     return next();
+//   }
+//   const salt = await bcrypt.genSalt(10);
+//   this.password = await bcrypt.hash(this.password, salt);
+
+//   if (!this.referralCode) {
+//     this.referralCode = await generateUniqueReferralCode();
+//   }
+//   next();
+// });
+
+userSchema.pre("save", async function () {
+  if (!this.isModified("password")) return;
+
+  const salt = await bcrypt.genSalt(10);
+  this.password = await bcrypt.hash(this.password, salt);
+
   if (!this.referralCode) {
     this.referralCode = await generateUniqueReferralCode();
   }
-  next();
 });
 
-// Generate unique referral code
-async function generateUniqueReferralCode() {
-  const chars = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"; // Avoid confusing chars
-  let code;
-  let isUnique = false;
+// --- METHODS ---
 
-  while (!isUnique) {
-    code = "RK";
-    for (let i = 0; i < 4; i++) {
-      code += chars.charAt(Math.floor(Math.random() * chars.length));
-    }
+// Compare entered password with hashed password
+userSchema.methods.matchPassword = async function (enteredPassword) {
+  return await bcrypt.compare(enteredPassword, this.password);
+};
 
-    const existingUser = await mongoose.models.User.findOne({
-      referralCode: code,
-    });
-    if (!existingUser) {
-      isUnique = true;
-    }
-  }
-
-  return code;
-}
-
-// Method to check if user has active coupons
+// Check for active coupons
 userSchema.methods.hasActiveCoupons = async function () {
   const UserCoupon = mongoose.model("UserCoupon");
   const count = await UserCoupon.countDocuments({
@@ -140,18 +138,23 @@ userSchema.methods.hasActiveCoupons = async function () {
   return count > 0;
 };
 
-// Method to get user's total savings
-userSchema.methods.getTotalSavings = async function () {
-  const Purchase = mongoose.model("Purchase");
-  const result = await Purchase.aggregate([
-    { $match: { userId: this._id, discount: { $gt: 0 } } },
-    { $group: { _id: null, totalSavings: { $sum: "$discount" } } },
-  ]);
-
-  return result.length > 0 ? result[0].totalSavings : 0;
-};
+// Helper: Generate Referral Code
+async function generateUniqueReferralCode() {
+  const chars = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
+  let code;
+  let isUnique = false;
+  while (!isUnique) {
+    code = "RK";
+    for (let i = 0; i < 4; i++) {
+      code += chars.charAt(Math.floor(Math.random() * chars.length));
+    }
+    const existingUser = await mongoose.models.User.findOne({
+      referralCode: code,
+    });
+    if (!existingUser) isUnique = true;
+  }
+  return code;
+}
 
 const User = mongoose.model("User", userSchema);
-// module.exports = User;
-
 export default User;

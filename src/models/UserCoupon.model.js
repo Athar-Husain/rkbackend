@@ -1,5 +1,3 @@
-// const mongoose = require("mongoose");
-// const qr = require("qr-image");
 import mongoose from "mongoose";
 import qr from "qr-image";
 
@@ -43,12 +41,12 @@ const userCouponSchema = new mongoose.Schema(
         type: mongoose.Schema.Types.ObjectId,
         ref: "Purchase",
       },
-      staffId: String, // Staff username who processed
-      amountUsed: Number, // Actual discount applied
+      staffId: String,
+      amountUsed: Number,
       notes: String,
     },
 
-    // Validity (inherited from coupon but can be overridden)
+    // Validity (can override coupon validity)
     validFrom: Date,
     validUntil: Date,
 
@@ -57,7 +55,6 @@ const userCouponSchema = new mongoose.Schema(
       type: Date,
       default: Date.now,
     },
-    updatedAt: Date,
   },
   {
     timestamps: true,
@@ -66,8 +63,11 @@ const userCouponSchema = new mongoose.Schema(
   },
 );
 
-// Generate unique code and QR before saving
-userCouponSchema.pre("save", async function (next) {
+/* =========================
+   PRE SAVE (NO next())
+========================= */
+userCouponSchema.pre("save", async function () {
+  /* ---------- UNIQUE CODE ---------- */
   if (!this.uniqueCode) {
     const chars = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
     let code;
@@ -75,10 +75,13 @@ userCouponSchema.pre("save", async function (next) {
 
     while (!isUnique) {
       code = "RK-";
+
       for (let i = 0; i < 3; i++) {
         code += chars.charAt(Math.floor(Math.random() * chars.length));
       }
+
       code += "-";
+
       for (let i = 0; i < 4; i++) {
         code += chars.charAt(Math.floor(Math.random() * chars.length));
       }
@@ -86,6 +89,7 @@ userCouponSchema.pre("save", async function (next) {
       const existing = await mongoose.models.UserCoupon.findOne({
         uniqueCode: code,
       });
+
       if (!existing) {
         isUnique = true;
       }
@@ -94,7 +98,7 @@ userCouponSchema.pre("save", async function (next) {
     this.uniqueCode = code;
   }
 
-  // Generate QR code data
+  /* ---------- QR CODE ---------- */
   if (!this.qrCodeData) {
     const payload = {
       userCouponId: this._id.toString(),
@@ -104,35 +108,36 @@ userCouponSchema.pre("save", async function (next) {
       timestamp: Date.now(),
     };
 
-    // Encrypt payload (simplified - in production use proper encryption)
+    // Encode payload (use real encryption in production)
     this.qrCodeData = Buffer.from(JSON.stringify(payload)).toString("base64");
 
-    // Generate QR code image (Base64)
     try {
-      const qr_png = qr.imageSync(this.qrCodeData, { type: "png", size: 10 });
+      const qr_png = qr.imageSync(this.qrCodeData, {
+        type: "png",
+        size: 10,
+      });
+
       this.qrCodeImage = `data:image/png;base64,${qr_png.toString("base64")}`;
     } catch (error) {
       console.error("Error generating QR code:", error);
     }
   }
-
-  next();
 });
 
-// Virtual for isExpired
+/* =========================
+   VIRTUALS
+========================= */
 userCouponSchema.virtual("isExpired").get(function () {
-  if (this.validUntil) {
-    return this.validUntil < new Date();
-  }
-  return false;
+  return this.validUntil ? this.validUntil < new Date() : false;
 });
 
-// Virtual for isValid (can be used)
 userCouponSchema.virtual("isValid").get(function () {
   return this.status === "ACTIVE" && !this.isExpired;
 });
 
-// Method to redeem coupon
+/* =========================
+   METHODS
+========================= */
 userCouponSchema.methods.redeem = async function (
   storeId,
   staffId,
@@ -158,7 +163,6 @@ userCouponSchema.methods.redeem = async function (
     notes,
   };
 
-  // Increment coupon redemption count
   const Coupon = mongoose.model("Coupon");
   await Coupon.findByIdAndUpdate(this.couponId, {
     $inc: { currentRedemptions: 1 },
@@ -167,14 +171,14 @@ userCouponSchema.methods.redeem = async function (
   return this.save();
 };
 
-// Static method to validate QR code
+/* =========================
+   STATICS
+========================= */
 userCouponSchema.statics.validateQRCode = async function (qrData) {
   try {
-    // Decode QR data
     const decoded = Buffer.from(qrData, "base64").toString("utf8");
     const payload = JSON.parse(decoded);
 
-    // Find user coupon
     const userCoupon = await this.findById(payload.userCouponId)
       .populate("userId", "name mobile city area")
       .populate(
@@ -187,7 +191,6 @@ userCouponSchema.statics.validateQRCode = async function (qrData) {
       return { valid: false, message: "Coupon not found" };
     }
 
-    // Validate payload matches
     if (
       userCoupon.userId._id.toString() !== payload.userId ||
       userCoupon.couponId._id.toString() !== payload.couponId ||
@@ -196,7 +199,6 @@ userCouponSchema.statics.validateQRCode = async function (qrData) {
       return { valid: false, message: "Invalid coupon data" };
     }
 
-    // Check status
     if (userCoupon.status !== "ACTIVE") {
       return {
         valid: false,
@@ -204,14 +206,13 @@ userCouponSchema.statics.validateQRCode = async function (qrData) {
       };
     }
 
-    // Check expiry
     if (userCoupon.isExpired) {
       return { valid: false, message: "Coupon has expired" };
     }
 
     return {
       valid: true,
-      userCoupon: userCoupon,
+      userCoupon,
       user: userCoupon.userId,
       coupon: userCoupon.couponId,
       discountAmount: userCoupon.couponId.value,
@@ -222,7 +223,6 @@ userCouponSchema.statics.validateQRCode = async function (qrData) {
   }
 };
 
-// Static method to validate manual code
 userCouponSchema.statics.validateManualCode = async function (code) {
   const userCoupon = await this.findOne({ uniqueCode: code })
     .populate("userId", "name mobile city area")
@@ -236,7 +236,6 @@ userCouponSchema.statics.validateManualCode = async function (code) {
     return { valid: false, message: "Invalid coupon code" };
   }
 
-  // Check status
   if (userCoupon.status !== "ACTIVE") {
     return {
       valid: false,
@@ -244,14 +243,13 @@ userCouponSchema.statics.validateManualCode = async function (code) {
     };
   }
 
-  // Check expiry
   if (userCoupon.isExpired) {
     return { valid: false, message: "Coupon has expired" };
   }
 
   return {
     valid: true,
-    userCoupon: userCoupon,
+    userCoupon,
     user: userCoupon.userId,
     coupon: userCoupon.couponId,
     discountAmount: userCoupon.couponId.value,
@@ -259,6 +257,4 @@ userCouponSchema.statics.validateManualCode = async function (code) {
 };
 
 const UserCoupon = mongoose.model("UserCoupon", userCouponSchema);
-// module.exports = UserCoupon;
-
 export default UserCoupon;
