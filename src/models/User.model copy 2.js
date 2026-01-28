@@ -10,62 +10,64 @@ const userSchema = new mongoose.Schema(
       trim: true,
       match: [/^[6-9]\d{9}$/, "Please enter a valid Indian mobile number"],
     },
-
     name: {
       type: String,
       required: [true, "Name is required"],
       trim: true,
     },
-
     email: {
       type: String,
       required: [true, "Email is required"],
       unique: true,
       lowercase: true,
       trim: true,
+      match: [
+        /^\w+([\.-]?\w+)*@\w+([\.-]?\w+)*(\.\w{2,3})+$/,
+        "Please enter a valid email",
+      ],
     },
-
     password: {
       type: String,
-      required: true,
-      minlength: 6,
-      select: false,
+      required: [true, "Password is required"],
+      minlength: [6, "Password must be at least 6 characters"],
+      select: false, // Hidden by default in queries
     },
-
-    /** ✅ City reference */
     city: {
-      type: mongoose.Schema.Types.ObjectId,
-      ref: "CityArea",
-      required: true,
+      type: String,
+      required: [true, "City is required"],
     },
-
-    /** ✅ Area reference (subdocument _id) */
     area: {
-      type: mongoose.Schema.Types.ObjectId,
-      required: true,
+      type: String,
+      required: [true, "Area is required"],
     },
-
+    registrationStore: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "Store",
+    },
     referralCode: {
       type: String,
       unique: true,
       uppercase: true,
     },
-
     referredBy: {
       type: mongoose.Schema.Types.ObjectId,
       ref: "User",
     },
-
     walletBalance: {
       type: Number,
       default: 0,
     },
-
-    userType: {
-      type: String,
-      default: "Customer",
-    },
-
+    userType: { type: String, default: "Customer" },
+    // deviceTokens: [
+    //   {
+    //     token: String,
+    //     platform: {
+    //       type: String,
+    //       enum: ["android", "ios", "web"],
+    //     },
+    //     lastActive: Date,
+    //   },
+    // ],
     deviceTokens: [
       {
         token: String,
@@ -82,16 +84,32 @@ const userSchema = new mongoose.Schema(
       notifications: { type: Boolean, default: true },
       smsAlerts: { type: Boolean, default: true },
     },
-
     isActive: { type: Boolean, default: true },
     isVerified: { type: Boolean, default: false },
     lastLogin: Date,
     passwordResetAt: Date,
   },
-  { timestamps: true },
+  {
+    timestamps: true,
+  },
 );
 
-/* ---------------- PASSWORD HASH ---------------- */
+// --- HOOKS ---
+
+// Hash password before saving
+// userSchema.pre("save", async function (next) {
+//   if (!this.isModified("password")) {
+//     return next();
+//   }
+//   const salt = await bcrypt.genSalt(10);
+//   this.password = await bcrypt.hash(this.password, salt);
+
+//   if (!this.referralCode) {
+//     this.referralCode = await generateUniqueReferralCode();
+//   }
+//   next();
+// });
+
 userSchema.pre("save", async function () {
   if (!this.isModified("password")) return;
 
@@ -103,24 +121,40 @@ userSchema.pre("save", async function () {
   }
 });
 
+// --- METHODS ---
+
+// Compare entered password with hashed password
 userSchema.methods.matchPassword = async function (enteredPassword) {
-  return bcrypt.compare(enteredPassword, this.password);
+  return await bcrypt.compare(enteredPassword, this.password);
 };
 
-/* ---------------- REFERRAL CODE ---------------- */
+// Check for active coupons
+userSchema.methods.hasActiveCoupons = async function () {
+  const UserCoupon = mongoose.model("UserCoupon");
+  const count = await UserCoupon.countDocuments({
+    userId: this._id,
+    status: "ACTIVE",
+  });
+  return count > 0;
+};
+
+// Helper: Generate Referral Code
 async function generateUniqueReferralCode() {
   const chars = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
   let code;
-  let exists = true;
-
-  while (exists) {
+  let isUnique = false;
+  while (!isUnique) {
     code = "RK";
     for (let i = 0; i < 4; i++) {
-      code += chars[Math.floor(Math.random() * chars.length)];
+      code += chars.charAt(Math.floor(Math.random() * chars.length));
     }
-    exists = await mongoose.models.User.findOne({ referralCode: code });
+    const existingUser = await mongoose.models.User.findOne({
+      referralCode: code,
+    });
+    if (!existingUser) isUnique = true;
   }
   return code;
 }
 
-export default mongoose.model("User", userSchema);
+const User = mongoose.model("User", userSchema);
+export default User;

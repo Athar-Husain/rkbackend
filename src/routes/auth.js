@@ -32,11 +32,11 @@ import {
 
 const router = express.Router();
 
+router.post("/send-otp", sendOTP);
 // Public routes
 // router.post("/admin-login", );
 router.post("/signin", signin);
 router.post("/signup", signup);
-router.post("/send-otp", sendOTP);
 router.post("/verify-otp", validate(validateOTP), verifyOTP);
 router.post("/forgot-password", forgotPassword);
 router.post("/reset-password", resetPassword);
