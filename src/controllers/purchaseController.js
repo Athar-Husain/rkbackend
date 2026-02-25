@@ -5,7 +5,7 @@ import UserCoupon from "../models/UserCoupon.model.js";
 import Referral from "../models/Referral.model.js";
 import {
   sendPushNotification,
-  sendSMS,
+  sendNotificationSMS,
 } from "../services/notificationService.js";
 import Store from "../models/Store.model.js";
 
@@ -463,7 +463,7 @@ export const recordPurchase1 = async (req, res, next) => {
     }
 
     // Send receipt to user
-    await sendSMS(
+    await sendNotificationSMS(
       user.mobile,
       `Thank you for shopping at RK Electronics! Your purchase of ₹${finalAmount} is confirmed. Invoice: ${purchase.invoiceNumber}. Keep this app for future offers.`,
     );
@@ -804,12 +804,10 @@ export const recordPurchase = async (req, res, next) => {
       items.length === 0
     ) {
       // console.log("❌ Step 2: Validation failed");
-      return res
-        .status(400)
-        .json({
-          success: false,
-          error: "Please provide user ID, store ID, and at least one item",
-        });
+      return res.status(400).json({
+        success: false,
+        error: "Please provide user ID, store ID, and at least one item",
+      });
     }
     // console.log("✅ Step 2: Validation passed");
 
@@ -842,12 +840,10 @@ export const recordPurchase = async (req, res, next) => {
           product = await Product.findById(item.productId);
           if (!product) {
             // console.log(`❌ Step 5: Product not found: ${item.productId}`);
-            return res
-              .status(404)
-              .json({
-                success: false,
-                error: `Product not found: ${item.productId}`,
-              });
+            return res.status(404).json({
+              success: false,
+              error: `Product not found: ${item.productId}`,
+            });
           }
 
           // Step 5a: Update stock
@@ -1043,25 +1039,40 @@ export const recordPurchase = async (req, res, next) => {
 };
 
 export const recordPurchaseproduction = async (req, res, next) => {
-  const session = await mongoose.startSession()
-  session.startTransaction()
+  const session = await mongoose.startSession();
+  session.startTransaction();
 
   try {
-    const { userId, items, discount: discountInput = 0, tax = 0, couponCode, paymentMethod = "CASH", delivery = {}, notes = "" } = req.body;
+    const {
+      userId,
+      items,
+      discount: discountInput = 0,
+      tax = 0,
+      couponCode,
+      paymentMethod = "CASH",
+      delivery = {},
+      notes = "",
+    } = req.body;
     const requestedStaff = req.staff;
 
-    if (!requestedStaff) return res.status(400).json({ success: false, error: "Staff not found" });
+    if (!requestedStaff)
+      return res.status(400).json({ success: false, error: "Staff not found" });
 
     let discount = discountInput;
     const storeId = requestedStaff.storeId;
 
-    if (!userId || !storeId || !items?.length) return res.status(400).json({ success: false, error: "User, Store, and Items are required" });
+    if (!userId || !storeId || !items?.length)
+      return res
+        .status(400)
+        .json({ success: false, error: "User, Store, and Items are required" });
 
     const user = await User.findById(userId).session(session);
-    if (!user) return res.status(404).json({ success: false, error: "User not found" });
+    if (!user)
+      return res.status(404).json({ success: false, error: "User not found" });
 
     const store = await Store.findById(storeId).session(session);
-    if (!store) return res.status(404).json({ success: false, error: "Store not found" });
+    if (!store)
+      return res.status(404).json({ success: false, error: "Store not found" });
 
     // Process items
     let subtotal = 0;
@@ -1072,8 +1083,13 @@ export const recordPurchaseproduction = async (req, res, next) => {
         product = await Product.findById(item.productId).session(session);
         if (!product) throw new Error(`Product not found: ${item.productId}`);
 
-        const storeIndex = product.availableInStores.findIndex(s => s.storeId.toString() === storeId.toString());
-        if (storeIndex === -1 || product.availableInStores[storeIndex].stock < item.quantity) {
+        const storeIndex = product.availableInStores.findIndex(
+          (s) => s.storeId.toString() === storeId.toString(),
+        );
+        if (
+          storeIndex === -1 ||
+          product.availableInStores[storeIndex].stock < item.quantity
+        ) {
           throw new Error(`Insufficient stock for product: ${product.name}`);
         }
 
@@ -1089,7 +1105,7 @@ export const recordPurchaseproduction = async (req, res, next) => {
 
       processedItems.push({
         productId: product?._id || null,
-        name: item.name || product?.name || 'Custom Item',
+        name: item.name || product?.name || "Custom Item",
         quantity: item.quantity,
         unitPrice,
         totalPrice,
@@ -1100,14 +1116,25 @@ export const recordPurchaseproduction = async (req, res, next) => {
     // Coupon
     let couponUsed = null;
     if (couponCode) {
-      const userCoupon = await UserCoupon.findOne({ uniqueCode: couponCode, userId, status: "ACTIVE" }).populate("couponId").session(session);
+      const userCoupon = await UserCoupon.findOne({
+        uniqueCode: couponCode,
+        userId,
+        status: "ACTIVE",
+      })
+        .populate("couponId")
+        .session(session);
       if (userCoupon) {
         if (userCoupon.isExpired) throw new Error("Coupon has expired");
-        if (userCoupon.couponId.minPurchaseAmount > subtotal) throw new Error("Minimum purchase not met for coupon");
+        if (userCoupon.couponId.minPurchaseAmount > subtotal)
+          throw new Error("Minimum purchase not met for coupon");
 
         const couponDiscount = userCoupon.couponId.calculateDiscount(subtotal);
         discount = Math.max(discount, couponDiscount);
-        couponUsed = { userCouponId: userCoupon._id, couponCode: userCoupon.couponId.code, discountApplied: couponDiscount };
+        couponUsed = {
+          userCouponId: userCoupon._id,
+          couponCode: userCoupon.couponId.code,
+          discountApplied: couponDiscount,
+        };
       }
     }
 
@@ -1135,17 +1162,34 @@ export const recordPurchaseproduction = async (req, res, next) => {
 
     // Redeem coupon
     if (couponUsed?.userCouponId) {
-      const userCoupon = await UserCoupon.findById(couponUsed.userCouponId).session(session);
-      if (userCoupon) await userCoupon.redeem(storeId, requestedStaff._id, purchase._id, couponUsed.discountApplied);
+      const userCoupon = await UserCoupon.findById(
+        couponUsed.userCouponId,
+      ).session(session);
+      if (userCoupon)
+        await userCoupon.redeem(
+          storeId,
+          requestedStaff._id,
+          purchase._id,
+          couponUsed.discountApplied,
+        );
     }
 
     // First purchase referral
-    const userPurchaseCount = await Purchase.countDocuments({ userId }).session(session);
+    const userPurchaseCount = await Purchase.countDocuments({ userId }).session(
+      session,
+    );
     if (userPurchaseCount === 1) {
-      const referral = await Referral.findOne({ referredUserId: userId, status: "PENDING" }).session(session);
+      const referral = await Referral.findOne({
+        referredUserId: userId,
+        status: "PENDING",
+      }).session(session);
       if (referral) {
         await referral.markAsFirstPurchase(purchase._id);
-        await sendPushNotification(referral.referrerId, "Referral Completed!", `${user.name} made their first purchase. You've earned a ₹500 coupon!`);
+        await sendPushNotification(
+          referral.referrerId,
+          "Referral Completed!",
+          `${user.name} made their first purchase. You've earned a ₹500 coupon!`,
+        );
       }
     }
 
@@ -1160,7 +1204,6 @@ export const recordPurchaseproduction = async (req, res, next) => {
     res.status(400).json({ success: false, error: error.message });
   }
 };
-
 
 export const previewPurchase = async (req, res) => {
   try {
@@ -1352,7 +1395,7 @@ export const updatePurchaseStatus = async (req, res, next) => {
     if (status === "DELIVERED" || status === "INSTALLED") {
       const user = await User.findById(purchase.userId);
       if (user) {
-        await sendSMS(
+        await sendNotificationSMS(
           user.mobile,
           `Your order ${
             purchase.invoiceNumber
@@ -1689,28 +1732,28 @@ export const getMyPurchases = async (req, res, next) => {
 };
 
 export const getMyRecordedPurchases = async (req, res) => {
-    try {
-        const staffId = req.staff._id
+  try {
+    const staffId = req.staff._id;
 
-        const purchases = await Purchase.find({ staffId })
-            .populate('userId', 'name email')
-            .populate('storeId', 'name location')
-            .sort({ createdAt: -1 })
+    const purchases = await Purchase.find({ staffId })
+      .populate("userId", "name email")
+      .populate("storeId", "name location")
+      .sort({ createdAt: -1 });
 
-        res.status(200).json({
-            success: true,
-            count: purchases.length,
-            purchases,
-        })
-    } catch (error) {
-        console.error('Error fetching staff purchases:', error)
+    res.status(200).json({
+      success: true,
+      count: purchases.length,
+      purchases,
+    });
+  } catch (error) {
+    console.error("Error fetching staff purchases:", error);
 
-        res.status(500).json({
-            success: false,
-            error: 'Failed to fetch staff purchases',
-        })
-    }
-}
+    res.status(500).json({
+      success: false,
+      error: "Failed to fetch staff purchases",
+    });
+  }
+};
 
 // @desc    Get purchases for a store
 // @route   GET /api/purchases/store/:storeId
