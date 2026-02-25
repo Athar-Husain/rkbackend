@@ -51,6 +51,9 @@ export const generateQRCode = (data) => {
   }
 };
 
+export const fail = (res, status, message) =>
+  res.status(status).json({ success: false, message });
+
 // Format currency
 export const formatCurrency = (amount) => {
   return new Intl.NumberFormat("en-IN", {

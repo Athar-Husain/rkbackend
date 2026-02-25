@@ -3,6 +3,7 @@ import {
   addProduct,
   checkAvailability,
   compareProducts,
+  getCategoriesList,
   getFeaturedProducts,
   getProductById,
   getProducts,
@@ -15,6 +16,7 @@ const router = express.Router();
 
 // Public routes
 router.get("/getProducts", getProducts);
+router.get("/getCategoriesList", getCategoriesList);
 router.get("/getFeaturedProducts", getFeaturedProducts);
 router.get("/search/:query", searchProducts);
 router.get("/category/:category", getProductsByCategory);

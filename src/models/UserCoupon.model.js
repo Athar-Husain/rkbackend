@@ -41,7 +41,8 @@ const userCouponSchema = new mongoose.Schema(
         type: mongoose.Schema.Types.ObjectId,
         ref: "Purchase",
       },
-      staffId: String,
+      // staffId: String,
+      staffId: { type: mongoose.Schema.Types.ObjectId, ref: "Staff" },
       amountUsed: Number,
       notes: String,
     },
@@ -223,7 +224,7 @@ userCouponSchema.statics.validateQRCode = async function (qrData) {
   }
 };
 
-userCouponSchema.statics.validateManualCode = async function (code) {
+userCouponSchema.statics.validateManualCode2 = async function (code) {
   const userCoupon = await this.findOne({ uniqueCode: code })
     .populate("userId", "name mobile city area")
     .populate(
@@ -254,6 +255,33 @@ userCouponSchema.statics.validateManualCode = async function (code) {
     coupon: userCoupon.couponId,
     discountAmount: userCoupon.couponId.value,
   };
+};
+
+userCouponSchema.statics.validateManualCode = async function (
+  code,
+  currentPurchaseItems = [],
+) {
+  const userCoupon = await this.findOne({ uniqueCode: code })
+    .populate("userId")
+    .populate("couponId");
+
+  if (!userCoupon) return { valid: false, message: "Invalid code" };
+
+  // 1. Basic status/expiry checks...
+
+  // 2. Product Rule Check
+  const isProductValid = validateProductRules(
+    userCoupon.couponId,
+    currentPurchaseItems,
+  );
+  if (!isProductValid) {
+    return {
+      valid: false,
+      message: "This coupon is not valid for the items in your cart.",
+    };
+  }
+
+  return { valid: true, userCoupon };
 };
 
 const UserCoupon = mongoose.model("UserCoupon", userCouponSchema);

@@ -1,5 +1,5 @@
-// const ErrorResponse = require("../utils/errorResponse");
-import ErrorResponse from "../utils/errorResponse.js";
+// middleware/errorHandler.js
+import ErrorResponse from "../utils/errorResponse.js"; // Import the ErrorResponse function
 
 const errorHandler = (err, req, res, next) => {
   let error = { ...err };
@@ -11,7 +11,7 @@ const errorHandler = (err, req, res, next) => {
   // Mongoose bad ObjectId
   if (err.name === "CastError") {
     const message = `Resource not found with id of ${err.value}`;
-    error = new ErrorResponse(message, 404);
+    error = ErrorResponse(message, 404); // Use the function to create the error
   }
 
   // Mongoose duplicate key
@@ -19,24 +19,26 @@ const errorHandler = (err, req, res, next) => {
     const field = Object.keys(err.keyValue)[0];
     const value = err.keyValue[field];
     const message = `Duplicate field value entered: ${field} "${value}" already exists`;
-    error = new ErrorResponse(message, 400);
+    error = ErrorResponse(message, 400); // Use the function
   }
 
   // Mongoose validation error
   if (err.name === "ValidationError") {
-    const message = Object.values(err.errors).map((val) => val.message);
-    error = new ErrorResponse(message, 400);
+    const message = Object.values(err.errors)
+      .map((val) => val.message)
+      .join(", ");
+    error = ErrorResponse(message, 400); // Use the function
   }
 
   // JWT errors
   if (err.name === "JsonWebTokenError") {
     const message = "Invalid token";
-    error = new ErrorResponse(message, 401);
+    error = ErrorResponse(message, 401); // Use the function
   }
 
   if (err.name === "TokenExpiredError") {
     const message = "Token expired";
-    error = new ErrorResponse(message, 401);
+    error = ErrorResponse(message, 401); // Use the function
   }
 
   res.status(error.statusCode || 500).json({
@@ -44,7 +46,5 @@ const errorHandler = (err, req, res, next) => {
     error: error.message || "Server Error",
   });
 };
-
-// module.exports = errorHandler;
 
 export default errorHandler;

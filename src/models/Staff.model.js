@@ -13,6 +13,25 @@ const staffSchema = new mongoose.Schema(
       required: [true, "Staff name is required"],
       trim: true,
     },
+    email: {
+      type: String,
+      required: [true, "Email is required"],
+      lowercase: true,
+
+      trim: true,
+      match: [
+        /^\w+([.-]?\w+)*@\w+([.-]?\w+)*(\.\w{2,3})+$/,
+        "Please enter a valid email",
+      ],
+      unique: true,
+    },
+    mobile: {
+      type: String,
+      required: [true, "Mobile number is required"],
+      trim: true,
+      match: [/^[6-9]\d{9}$/, "Please enter a valid Indian mobile number"],
+      unique: true,
+    },
     username: {
       type: String,
       required: [true, "Username is required"],
@@ -28,8 +47,20 @@ const staffSchema = new mongoose.Schema(
     userType: {
       type: String,
       lowercase: true,
-      default: "admin",
+      default: "staff",
     },
+    deviceTokens: [
+      {
+        token: String,
+        platform: {
+          type: String,
+          enum: ["android", "ios", "web"],
+          default: "android",
+        },
+        deviceId: String,
+        lastUsed: { type: Date, default: Date.now },
+      },
+    ],
     role: {
       type: String,
       //   enum: ["STAFF", "MANAGER", "ADMIN"],
@@ -47,6 +78,7 @@ const staffSchema = new mongoose.Schema(
       default: true,
     },
     lastLogin: Date,
+    lastActive: Date,
   },
   { timestamps: true },
 );

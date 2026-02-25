@@ -15,15 +15,28 @@ const purchaseSchema = new mongoose.Schema(
       ref: "Store",
       required: true,
     },
-    staffId: String,
+    staffId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "Staff",
+      // required: true,
+    },
+    // staffId: String,
 
     // Items Purchased
     items: [
       {
+        // productId: {
+        //   type: mongoose.Schema.Types.ObjectId,
+        //   ref: "Product",
+        //   required: true,
+        // },
         productId: {
           type: mongoose.Schema.Types.ObjectId,
           ref: "Product",
-          required: true,
+        },
+        isCustomItem: {
+          type: Boolean,
+          default: false,
         },
         sku: String,
         name: String,

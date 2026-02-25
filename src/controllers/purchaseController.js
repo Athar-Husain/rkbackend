@@ -3,12 +3,269 @@ import Product from "../models/Product.model.js";
 import User from "../models/User.model.js";
 import UserCoupon from "../models/UserCoupon.model.js";
 import Referral from "../models/Referral.model.js";
-import NotificationService from "../services/notificationService.js";
+import {
+  sendPushNotification,
+  sendSMS,
+} from "../services/notificationService.js";
+import Store from "../models/Store.model.js";
+
+import fs from "fs";
+import { exportSalesReportToExcel } from "../utils/excelHelper.js";
+import mongoose from "mongoose";
 
 // @desc    Record a purchase (for store staff)
 // @route   POST /api/purchases
 // @access  Private (Store staff)
-export const recordPurchase = async (req, res, next) => {
+export const recordPurchase2 = async (req, res, next) => {
+  try {
+    console.log("req.user", req.staff);
+    const {
+      userId,
+
+      items,
+      discount = 0,
+      tax = 0,
+      couponCode,
+      paymentMethod = "CASH",
+      delivery = {},
+      notes = "",
+    } = req.body;
+
+    let storeId = req.staff.storeId;
+
+    // Validate required fields
+    if (
+      !userId ||
+      !storeId ||
+      !items ||
+      !Array.isArray(items) ||
+      items.length === 0
+    ) {
+      return res.status(400).json({
+        success: false,
+        error: "Please provide user ID, store ID, and at least one item",
+      });
+    }
+
+    // Verify user exists
+    const user = await User.findById(userId);
+    if (!user) {
+      return res.status(404).json({
+        success: false,
+        error: "User not found",
+      });
+    }
+
+    // Verify store exists
+    // const Store = require("../models/Store.model.js");
+    const store = await Store.findById(storeId);
+    if (!store) {
+      return res.status(404).json({
+        success: false,
+        error: "Store not found",
+      });
+    }
+
+    // Process items
+    let subtotal = 0;
+    const processedItems = [];
+
+    for (const item of items) {
+      const product = await Product.findById(item.productId);
+      if (!product) {
+        return res.status(404).json({
+          success: false,
+          error: `Product not found: ${item.productId}`,
+        });
+      }
+
+      const unitPrice = item.unitPrice || product.sellingPrice;
+      const quantity = item.quantity || 1;
+      const totalPrice = unitPrice * quantity;
+
+      processedItems.push({
+        productId: product._id,
+        sku: product.sku,
+        name: product.name,
+        category: product.category,
+        brand: product.brand,
+        model: product.model,
+        quantity,
+        unitPrice,
+        totalPrice,
+        specifications: product.specifications,
+      });
+
+      subtotal += totalPrice;
+
+      // Update product stock if needed
+      if (product.availableInStores && product.availableInStores.length > 0) {
+        const storeIndex = product.availableInStores.findIndex(
+          (s) => s.storeId.toString() === storeId.toString(),
+        );
+
+        if (
+          storeIndex !== -1 &&
+          product.availableInStores[storeIndex].stock >= quantity
+        ) {
+          product.availableInStores[storeIndex].stock -= quantity;
+          product.overallStock -= quantity;
+          await product.save();
+        }
+      }
+    }
+
+    // Handle coupon if provided
+    let couponUsed = null;
+    if (couponCode) {
+      // Find user coupon
+      const userCoupon = await UserCoupon.findOne({
+        uniqueCode: couponCode,
+        userId: userId,
+        status: "ACTIVE",
+      }).populate("couponId");
+
+      if (userCoupon) {
+        // Validate coupon
+        if (userCoupon.isExpired) {
+          return res.status(400).json({
+            success: false,
+            error: "Coupon has expired",
+          });
+        }
+
+        // Check minimum purchase
+        if (userCoupon.couponId.minPurchaseAmount > subtotal) {
+          return res.status(400).json({
+            success: false,
+            error: `Minimum purchase of ₹${userCoupon.couponId.minPurchaseAmount} required for this coupon`,
+          });
+        }
+
+        // Calculate discount from coupon
+        const couponDiscount = userCoupon.couponId.calculateDiscount(subtotal);
+
+        // Update discount
+        discount = Math.max(discount, couponDiscount);
+
+        // Mark coupon for redemption
+        couponUsed = {
+          userCouponId: userCoupon._id,
+          couponCode: userCoupon.couponId.code,
+          discountApplied: couponDiscount,
+        };
+      }
+    }
+
+    // Calculate final amount
+    const finalAmount = subtotal - discount + tax;
+
+    // Create purchase record
+    const purchase = new Purchase({
+      userId,
+      storeId,
+      // staffId: req.staff?.username || "system",
+      staffId: req.staff?._id || null,
+      items: processedItems,
+      subtotal,
+      discount,
+      tax,
+      finalAmount,
+      couponUsed,
+      payment: {
+        method: paymentMethod,
+        status: "COMPLETED",
+      },
+      delivery,
+      notes,
+      status: "COMPLETED",
+    });
+
+    await purchase.save();
+
+    // Mark coupon as redeemed if used
+    if (couponUsed && couponUsed.userCouponId) {
+      const userCoupon = await UserCoupon.findById(couponUsed.userCouponId);
+      if (userCoupon) {
+        await userCoupon.redeem(
+          storeId,
+          req.staff?.username || "system",
+          purchase._id,
+          couponUsed.discountApplied,
+        );
+      }
+    }
+
+    // Check if this is user's first purchase (for referral completion)
+    const userPurchaseCount = await Purchase.countDocuments({ userId: userId });
+    if (userPurchaseCount === 1) {
+      // Find pending referral for this user
+      const referral = await Referral.findOne({
+        referredUserId: userId,
+        status: "PENDING",
+      });
+
+      if (referral) {
+        await referral.markAsFirstPurchase(purchase._id);
+
+        // Send notification to referrer
+        await sendPushNotification(
+          referral.referrerId,
+          "Referral Completed!",
+          `${user.name} made their first purchase. You've earned a ₹500 coupon!`,
+        );
+      }
+    }
+
+    // Send receipt to user
+    // await sendSMS(
+    //   user.mobile,
+    //   `Thank you for shopping at RK Electronics! Your purchase of ₹${finalAmount} is confirmed. Invoice: ${purchase.invoiceNumber}. Keep this app for future offers.`,
+    // );
+
+    res.status(201).json({
+      success: true,
+      purchase: {
+        id: purchase._id,
+        invoiceNumber: purchase.invoiceNumber,
+        date: purchase.createdAt,
+        customer: {
+          name: user.name,
+          mobile: user.mobile,
+        },
+        store: {
+          name: store.name,
+          address: store.location.address,
+        },
+        items: purchase.items.map((item) => ({
+          name: item.name,
+          quantity: item.quantity,
+          price: item.unitPrice,
+          total: item.totalPrice,
+        })),
+        summary: {
+          subtotal: purchase.subtotal,
+          discount: purchase.discount,
+          tax: purchase.tax,
+          finalAmount: purchase.finalAmount,
+        },
+        payment: purchase.payment.method,
+        couponUsed: purchase.couponUsed
+          ? {
+              code: purchase.couponUsed.couponCode,
+              discount: purchase.couponUsed.discountApplied,
+            }
+          : null,
+      },
+      message: "Purchase recorded successfully",
+    });
+  } catch (error) {
+    console.log("error", error.message);
+    next(error);
+  }
+};
+
+export const recordPurchase1 = async (req, res, next) => {
   try {
     const {
       userId,
@@ -46,7 +303,7 @@ export const recordPurchase = async (req, res, next) => {
     }
 
     // Verify store exists
-    const Store = require("../models/Store.model.js");
+    // const Store = require("../models/Store.model.js");
     const store = await Store.findById(storeId);
     if (!store) {
       return res.status(404).json({
@@ -197,7 +454,7 @@ export const recordPurchase = async (req, res, next) => {
         await referral.markAsFirstPurchase(purchase._id);
 
         // Send notification to referrer
-        await NotificationService.sendPushNotification(
+        await sendPushNotification(
           referral.referrerId,
           "Referral Completed!",
           `${user.name} made their first purchase. You've earned a ₹500 coupon!`,
@@ -206,7 +463,7 @@ export const recordPurchase = async (req, res, next) => {
     }
 
     // Send receipt to user
-    await NotificationService.sendSMS(
+    await sendSMS(
       user.mobile,
       `Thank you for shopping at RK Electronics! Your purchase of ₹${finalAmount} is confirmed. Invoice: ${purchase.invoiceNumber}. Keep this app for future offers.`,
     );
@@ -249,6 +506,735 @@ export const recordPurchase = async (req, res, next) => {
     });
   } catch (error) {
     next(error);
+  }
+};
+
+export const recordPurchase3 = async (req, res, next) => {
+  try {
+    console.log("🔹 Step 0: Request received");
+    console.log("req.staff:", req.staff);
+
+    const {
+      userId,
+      items,
+      // discount = 0,
+      tax = 0,
+      couponCode,
+      paymentMethod = "CASH",
+      delivery = {},
+      notes = "",
+    } = req.body;
+
+    let { discount = 0 } = req.body;
+
+    const storeId = req.staff?.storeId;
+    console.log("🔹 Step 1: Extracted storeId:", storeId);
+
+    // Validate required fields
+    if (
+      !userId ||
+      !storeId ||
+      !items ||
+      !Array.isArray(items) ||
+      items.length === 0
+    ) {
+      console.log("❌ Step 2: Validation failed");
+      return res.status(400).json({
+        success: false,
+        error: "Please provide user ID, store ID, and at least one item",
+      });
+    }
+    console.log("✅ Step 2: Validation passed");
+
+    // Verify user exists
+    const user = await User.findById(userId);
+    if (!user) {
+      console.log("❌ Step 3: User not found");
+      return res.status(404).json({ success: false, error: "User not found" });
+    }
+    console.log("✅ Step 3: User found:", user.name);
+
+    // Verify store exists
+    const store = await Store.findById(storeId);
+    if (!store) {
+      console.log("❌ Step 4: Store not found");
+      return res.status(404).json({ success: false, error: "Store not found" });
+    }
+    console.log("✅ Step 4: Store found:", store.name);
+
+    // Process items
+    let subtotal = 0;
+    const processedItems = [];
+
+    console.log("🔹 Step 5: Processing items");
+    for (const [index, item] of items.entries()) {
+      console.log(`  → Processing item ${index + 1}:`, item);
+
+      let processedItem = {};
+
+      if (item.productId) {
+        const product = await Product.findById(item.productId);
+        if (!product) {
+          console.log(
+            `❌ Step 5.${index + 1}: Product not found`,
+            item.productId,
+          );
+          return res.status(404).json({
+            success: false,
+            error: `Product not found: ${item.productId}`,
+          });
+        }
+
+        const unitPrice = item.unitPrice || product.sellingPrice;
+        const quantity = item.quantity || 1;
+        const totalPrice = unitPrice * quantity;
+
+        processedItem = {
+          productId: product._id,
+          sku: product.sku,
+          name: product.name,
+          category: product.category,
+          brand: product.brand,
+          model: product.model,
+          quantity,
+          unitPrice,
+          totalPrice,
+          specifications: product.specifications,
+          taxPercent: item.taxPercent || 0,
+        };
+
+        // Update stock
+        if (product.availableInStores?.length) {
+          const storeIndex = product.availableInStores.findIndex(
+            (s) => s.storeId.toString() === storeId.toString(),
+          );
+
+          if (
+            storeIndex !== -1 &&
+            product.availableInStores[storeIndex].stock >= quantity
+          ) {
+            product.availableInStores[storeIndex].stock -= quantity;
+            product.overallStock -= quantity;
+            await product.save();
+            console.log(`    ✅ Updated stock for product ${product.name}`);
+          }
+        }
+      } else {
+        // Custom item
+        const quantity = item.quantity || 1;
+        const unitPrice = item.unitPrice || 0;
+        const totalPrice = unitPrice * quantity;
+
+        processedItem = {
+          isCustomItem: true,
+          name: item.name,
+          quantity,
+          unitPrice,
+          totalPrice,
+          taxPercent: item.taxPercent || 0,
+        };
+      }
+
+      subtotal += processedItem.totalPrice;
+      processedItems.push(processedItem);
+      console.log(`    ✅ Processed item:`, processedItem);
+    }
+
+    console.log("✅ Step 5: All items processed. Subtotal:", subtotal);
+
+    // Handle coupon
+    let couponUsed = null;
+    console.log("🔹 Step 6: Processing coupon if any");
+    if (couponCode) {
+      const userCoupon = await UserCoupon.findOne({
+        uniqueCode: couponCode,
+        userId,
+        status: "ACTIVE",
+      }).populate("couponId");
+
+      if (userCoupon) {
+        if (userCoupon.isExpired) {
+          console.log("❌ Step 6: Coupon expired");
+          return res
+            .status(400)
+            .json({ success: false, error: "Coupon has expired" });
+        }
+
+        if (userCoupon.couponId.minPurchaseAmount > subtotal) {
+          console.log("❌ Step 6: Minimum purchase not met for coupon");
+          return res.status(400).json({
+            success: false,
+            error: `Minimum purchase of ₹${userCoupon.couponId.minPurchaseAmount} required`,
+          });
+        }
+
+        const couponDiscount = userCoupon.couponId.calculateDiscount(subtotal);
+        discount = Math.max(discount, couponDiscount);
+
+        couponUsed = {
+          userCouponId: userCoupon._id,
+          couponCode: userCoupon.couponId.code,
+          discountApplied: couponDiscount,
+        };
+        console.log("✅ Step 6: Coupon applied", couponUsed);
+      }
+    }
+
+    // Calculate final amount
+    const finalAmount = subtotal - discount + tax;
+    console.log("🔹 Step 7: Calculated final amount:", finalAmount);
+
+    // Create purchase
+    const purchase = new Purchase({
+      userId,
+      storeId,
+      staffId: req.staff?._id || null,
+      items: processedItems,
+      subtotal,
+      discount,
+      tax,
+      finalAmount,
+      couponUsed,
+      payment: { method: paymentMethod, status: "COMPLETED" },
+      delivery,
+      notes,
+      status: "COMPLETED",
+    });
+
+    await purchase.save();
+    console.log("✅ Step 8: Purchase saved:", purchase._id);
+
+    // Mark coupon redeemed
+    if (couponUsed?.userCouponId) {
+      const userCoupon = await UserCoupon.findById(couponUsed.userCouponId);
+      if (userCoupon) {
+        await userCoupon.redeem(
+          storeId,
+          req.staff?.username || "system",
+          purchase._id,
+          couponUsed.discountApplied,
+        );
+        console.log("✅ Step 9: Coupon redeemed");
+      }
+    }
+
+    // Check referral
+    const userPurchaseCount = await Purchase.countDocuments({ userId });
+    console.log("🔹 Step 10: User purchase count:", userPurchaseCount);
+
+    if (userPurchaseCount === 1) {
+      const referral = await Referral.findOne({
+        referredUserId: userId,
+        status: "PENDING",
+      });
+      if (referral) {
+        await referral.markAsFirstPurchase(purchase._id);
+        await sendPushNotification(
+          referral.referrerId,
+          "Referral Completed!",
+          `${user.name} made their first purchase. You've earned a ₹500 coupon!`,
+        );
+        console.log("✅ Step 10: Referral processed and notification sent");
+      }
+    }
+
+    console.log("🔹 Step 11: Returning response to frontend");
+    res.status(201).json({
+      success: true,
+      purchase: {
+        id: purchase._id,
+        invoiceNumber: purchase.invoiceNumber,
+        date: purchase.createdAt,
+        customer: { name: user.name, mobile: user.mobile },
+        store: { name: store.name, address: store.location.address },
+        items: purchase.items.map((i) => ({
+          name: i.name,
+          quantity: i.quantity,
+          price: i.unitPrice,
+          total: i.totalPrice,
+        })),
+        summary: { subtotal, discount, tax, finalAmount },
+        payment: purchase.payment.method,
+        couponUsed: couponUsed
+          ? {
+              code: couponUsed.couponCode,
+              discount: couponUsed.discountApplied,
+            }
+          : null,
+      },
+      message: "Purchase recorded successfully",
+    });
+  } catch (error) {
+    console.log("❌ Step 12: Error caught:", error.message);
+    next(error);
+  }
+};
+
+export const recordPurchase = async (req, res, next) => {
+  try {
+    // console.log("🔹 Step 0: Request received");
+    // console.log("req.staff:", req.staff);
+
+    const {
+      userId,
+      items,
+      discount: discountInput = 0,
+      tax = 0,
+      couponCode,
+      paymentMethod = "CASH",
+      delivery = {},
+      notes = "",
+    } = req.body;
+
+    const requestedStaff = req.staff;
+    if (!requestedStaff) {
+      return res.status(400).json({ success: false, error: "Staff Not Found" });
+    }
+
+    let discount = discountInput; // mutable
+    const storeId = requestedStaff.storeId;
+    // console.log("🔹 Step 1: Extracted storeId:", storeId);
+
+    // Step 2: Validate
+    if (
+      !userId ||
+      !storeId ||
+      !items ||
+      !Array.isArray(items) ||
+      items.length === 0
+    ) {
+      // console.log("❌ Step 2: Validation failed");
+      return res
+        .status(400)
+        .json({
+          success: false,
+          error: "Please provide user ID, store ID, and at least one item",
+        });
+    }
+    // console.log("✅ Step 2: Validation passed");
+
+    // Step 3: User
+    const user = await User.findById(userId);
+    if (!user) {
+      // console.log("❌ Step 3: User not found");
+      return res.status(404).json({ success: false, error: "User not found" });
+    }
+    // console.log("✅ Step 3: User found:", user.name);
+
+    // Step 4: Store
+    const store = await Store.findById(storeId);
+    if (!store) {
+      // console.log("❌ Step 4: Store not found");
+      return res.status(404).json({ success: false, error: "Store not found" });
+    }
+    // console.log("✅ Step 4: Store found:", store.name);
+
+    // Step 5: Process items
+    // console.log("🔹 Step 5: Processing items");
+    let subtotal = 0;
+    const processedItems = [];
+
+    for (const [index, item] of items.entries()) {
+      console.log(`  → Processing item ${index + 1}:`, item);
+      let product = null;
+      if (item.productId) {
+        try {
+          product = await Product.findById(item.productId);
+          if (!product) {
+            // console.log(`❌ Step 5: Product not found: ${item.productId}`);
+            return res
+              .status(404)
+              .json({
+                success: false,
+                error: `Product not found: ${item.productId}`,
+              });
+          }
+
+          // Step 5a: Update stock
+          try {
+            const storeIndex = product.availableInStores?.findIndex(
+              (s) => s.storeId.toString() === storeId.toString(),
+            );
+            if (
+              storeIndex !== -1 &&
+              product.availableInStores[storeIndex].stock >=
+                (item.quantity || 1)
+            ) {
+              product.availableInStores[storeIndex].stock -= item.quantity || 1;
+              product.overallStock -= item.quantity || 1;
+              await product.save();
+              console.log("    ✅ Stock updated for product:", product.name);
+            }
+          } catch (stockErr) {
+            console.log(
+              "❌ Step 5a: Stock update failed for product:",
+              product._id,
+              stockErr.message,
+            );
+          }
+        } catch (prodErr) {
+          console.log(
+            "❌ Step 5: Product fetch failed:",
+            item.productId,
+            prodErr.message,
+          );
+        }
+      }
+
+      const unitPrice = item.unitPrice || (product ? product.sellingPrice : 0);
+      const quantity = item.quantity || 1;
+      const totalPrice = unitPrice * quantity;
+
+      processedItems.push({
+        productId: product ? product._id : null,
+        sku: product ? product.sku : null,
+        name: item.name || (product ? product.name : "Custom Item"),
+        category: product ? product.category : null,
+        brand: product ? product.brand : null,
+        model: product ? product.model : null,
+        quantity,
+        unitPrice,
+        totalPrice,
+        specifications: product ? product.specifications : null,
+        isCustomItem: !product,
+      });
+
+      subtotal += totalPrice;
+      console.log(
+        "    ✅ Processed item:",
+        processedItems[processedItems.length - 1],
+      );
+    }
+
+    console.log(`✅ Step 5: All items processed. Subtotal: ${subtotal}`);
+
+    // Step 6: Coupon
+    let couponUsed = null;
+    if (couponCode) {
+      console.log("🔹 Step 6: Processing coupon");
+      try {
+        const userCoupon = await UserCoupon.findOne({
+          uniqueCode: couponCode,
+          userId,
+          status: "ACTIVE",
+        }).populate("couponId");
+
+        if (userCoupon) {
+          if (userCoupon.isExpired) throw new Error("Coupon expired");
+          if (userCoupon.couponId.minPurchaseAmount > subtotal)
+            throw new Error("Minimum purchase not met");
+
+          const couponDiscount =
+            userCoupon.couponId.calculateDiscount(subtotal);
+          discount = Math.max(discount, couponDiscount);
+
+          couponUsed = {
+            userCouponId: userCoupon._id,
+            couponCode: userCoupon.couponId.code,
+            discountApplied: couponDiscount,
+          };
+          console.log("✅ Step 6: Coupon applied", couponUsed);
+        }
+      } catch (couponErr) {
+        console.log("❌ Step 6: Coupon processing failed:", couponErr.message);
+      }
+    }
+
+    // Step 7: Final amount
+    const finalAmount = subtotal - discount + tax;
+    console.log(`🔹 Step 7: Calculated final amount: ${finalAmount}`);
+
+    // Step 8: Invoice
+    const invoiceNumber = `INV-${Date.now()}`;
+    console.log("🔹 Step 8: Generated invoiceNumber:", invoiceNumber);
+
+    // Step 9: Create purchase
+    const purchase = new Purchase({
+      userId,
+      storeId,
+      staffId: requestedStaff?._id || null,
+      items: processedItems,
+      subtotal,
+      discount,
+      tax,
+      finalAmount,
+      couponUsed,
+      payment: { method: paymentMethod, status: "COMPLETED" },
+      delivery,
+      notes,
+      status: "COMPLETED",
+      invoiceNumber,
+    });
+
+    await purchase.save();
+    console.log("✅ Step 9: Purchase saved with ID:", purchase._id);
+
+    // Step 10: Redeem coupon
+    if (couponUsed?.userCouponId) {
+      try {
+        const userCoupon = await UserCoupon.findById(couponUsed.userCouponId);
+        if (userCoupon) {
+          await userCoupon.redeem(
+            storeId,
+            requestedStaff?._id,
+            purchase._id,
+            couponUsed.discountApplied,
+          );
+          console.log("✅ Step 10: Coupon redeemed");
+        }
+      } catch (redeemErr) {
+        console.log("❌ Step 10: Coupon redemption failed:", redeemErr.message);
+      }
+    }
+
+    // Step 11: Referral
+    try {
+      const userPurchaseCount = await Purchase.countDocuments({ userId });
+      if (userPurchaseCount === 1) {
+        const referral = await Referral.findOne({
+          referredUserId: userId,
+          status: "PENDING",
+        });
+        if (referral) {
+          await referral.markAsFirstPurchase(purchase._id);
+          await sendPushNotification(
+            referral.referrerId,
+            "Referral Completed!",
+            `${user.name} made their first purchase. You've earned a ₹500 coupon!`,
+          );
+          console.log("✅ Step 11: Referral completed and notification sent");
+        }
+      }
+    } catch (refErr) {
+      console.log("❌ Step 11: Referral processing failed:", refErr.message);
+    }
+
+    // Step 12: Response
+    res.status(201).json({
+      success: true,
+      purchase: {
+        id: purchase._id,
+        invoiceNumber: purchase.invoiceNumber,
+        date: purchase.createdAt,
+        customer: { name: user.name, mobile: user.mobile },
+        store: { name: store.name, address: store.location.address },
+        items: purchase.items.map((item) => ({
+          name: item.name,
+          quantity: item.quantity,
+          price: item.unitPrice,
+          total: item.totalPrice,
+        })),
+        summary: { subtotal, discount, tax, finalAmount },
+        payment: purchase.payment.method,
+        couponUsed: couponUsed
+          ? {
+              code: couponUsed.couponCode,
+              discount: couponUsed.discountApplied,
+            }
+          : null,
+      },
+      message: "Purchase recorded successfully",
+    });
+    console.log("✅ Step 12: Response sent");
+  } catch (error) {
+    console.log("❌ Step 12: Error caught:", error.message, "\n", error.stack);
+    next(error);
+  }
+};
+
+export const recordPurchaseproduction = async (req, res, next) => {
+  const session = await mongoose.startSession()
+  session.startTransaction()
+
+  try {
+    const { userId, items, discount: discountInput = 0, tax = 0, couponCode, paymentMethod = "CASH", delivery = {}, notes = "" } = req.body;
+    const requestedStaff = req.staff;
+
+    if (!requestedStaff) return res.status(400).json({ success: false, error: "Staff not found" });
+
+    let discount = discountInput;
+    const storeId = requestedStaff.storeId;
+
+    if (!userId || !storeId || !items?.length) return res.status(400).json({ success: false, error: "User, Store, and Items are required" });
+
+    const user = await User.findById(userId).session(session);
+    if (!user) return res.status(404).json({ success: false, error: "User not found" });
+
+    const store = await Store.findById(storeId).session(session);
+    if (!store) return res.status(404).json({ success: false, error: "Store not found" });
+
+    // Process items
+    let subtotal = 0;
+    const processedItems = [];
+    for (const item of items) {
+      let product = null;
+      if (item.productId) {
+        product = await Product.findById(item.productId).session(session);
+        if (!product) throw new Error(`Product not found: ${item.productId}`);
+
+        const storeIndex = product.availableInStores.findIndex(s => s.storeId.toString() === storeId.toString());
+        if (storeIndex === -1 || product.availableInStores[storeIndex].stock < item.quantity) {
+          throw new Error(`Insufficient stock for product: ${product.name}`);
+        }
+
+        // Reduce stock
+        product.availableInStores[storeIndex].stock -= item.quantity;
+        product.overallStock -= item.quantity;
+        await product.save({ session });
+      }
+
+      const unitPrice = item.unitPrice || (product ? product.sellingPrice : 0);
+      const totalPrice = unitPrice * item.quantity;
+      subtotal += totalPrice;
+
+      processedItems.push({
+        productId: product?._id || null,
+        name: item.name || product?.name || 'Custom Item',
+        quantity: item.quantity,
+        unitPrice,
+        totalPrice,
+        isCustomItem: !product,
+      });
+    }
+
+    // Coupon
+    let couponUsed = null;
+    if (couponCode) {
+      const userCoupon = await UserCoupon.findOne({ uniqueCode: couponCode, userId, status: "ACTIVE" }).populate("couponId").session(session);
+      if (userCoupon) {
+        if (userCoupon.isExpired) throw new Error("Coupon has expired");
+        if (userCoupon.couponId.minPurchaseAmount > subtotal) throw new Error("Minimum purchase not met for coupon");
+
+        const couponDiscount = userCoupon.couponId.calculateDiscount(subtotal);
+        discount = Math.max(discount, couponDiscount);
+        couponUsed = { userCouponId: userCoupon._id, couponCode: userCoupon.couponId.code, discountApplied: couponDiscount };
+      }
+    }
+
+    const finalAmount = subtotal - discount + tax;
+    const invoiceNumber = `INV-${Date.now()}`;
+
+    const purchase = new Purchase({
+      userId,
+      storeId,
+      staffId: requestedStaff._id,
+      items: processedItems,
+      subtotal,
+      discount,
+      tax,
+      finalAmount,
+      couponUsed,
+      payment: { method: paymentMethod, status: "COMPLETED" },
+      delivery,
+      notes,
+      status: "COMPLETED",
+      invoiceNumber,
+    });
+
+    await purchase.save({ session });
+
+    // Redeem coupon
+    if (couponUsed?.userCouponId) {
+      const userCoupon = await UserCoupon.findById(couponUsed.userCouponId).session(session);
+      if (userCoupon) await userCoupon.redeem(storeId, requestedStaff._id, purchase._id, couponUsed.discountApplied);
+    }
+
+    // First purchase referral
+    const userPurchaseCount = await Purchase.countDocuments({ userId }).session(session);
+    if (userPurchaseCount === 1) {
+      const referral = await Referral.findOne({ referredUserId: userId, status: "PENDING" }).session(session);
+      if (referral) {
+        await referral.markAsFirstPurchase(purchase._id);
+        await sendPushNotification(referral.referrerId, "Referral Completed!", `${user.name} made their first purchase. You've earned a ₹500 coupon!`);
+      }
+    }
+
+    await session.commitTransaction();
+    session.endSession();
+
+    res.status(201).json({ success: true, purchase });
+  } catch (error) {
+    await session.abortTransaction();
+    session.endSession();
+    console.error("Purchase failed:", error.message);
+    res.status(400).json({ success: false, error: error.message });
+  }
+};
+
+
+export const previewPurchase = async (req, res) => {
+  try {
+    const { userId, storeId, items, couponCode, tax = 0 } = req.body;
+
+    if (!userId || !storeId || !items || !items.length) {
+      return res.status(400).json({
+        success: false,
+        error: "Missing required fields",
+      });
+    }
+
+    let subtotal = 0;
+
+    for (const item of items) {
+      subtotal += item.unitPrice * item.quantity;
+    }
+
+    let discount = 0;
+    let couponDetails = null;
+
+    if (couponCode) {
+      const userCoupon = await UserCoupon.findOne({
+        uniqueCode: couponCode,
+        userId,
+        status: "ACTIVE",
+      }).populate("couponId");
+
+      if (!userCoupon) {
+        return res.status(400).json({
+          success: false,
+          error: "Invalid coupon",
+        });
+      }
+
+      if (userCoupon.isExpired) {
+        return res.status(400).json({
+          success: false,
+          error: "Coupon expired",
+        });
+      }
+
+      if (subtotal < userCoupon.couponId.minPurchaseAmount) {
+        return res.status(400).json({
+          success: false,
+          error: `Minimum purchase ₹${userCoupon.couponId.minPurchaseAmount}`,
+        });
+      }
+
+      discount = userCoupon.couponId.calculateDiscount(subtotal);
+
+      couponDetails = {
+        code: userCoupon.couponId.code,
+        discountApplied: discount,
+      };
+    }
+
+    const finalAmount = subtotal - discount + tax;
+
+    res.json({
+      success: true,
+      summary: {
+        subtotal,
+        discount,
+        tax,
+        finalAmount,
+      },
+      coupon: couponDetails,
+    });
+  } catch (err) {
+    res.status(500).json({
+      success: false,
+      error: "Preview failed",
+    });
   }
 };
 
@@ -366,7 +1352,7 @@ export const updatePurchaseStatus = async (req, res, next) => {
     if (status === "DELIVERED" || status === "INSTALLED") {
       const user = await User.findById(purchase.userId);
       if (user) {
-        await NotificationService.sendSMS(
+        await sendSMS(
           user.mobile,
           `Your order ${
             purchase.invoiceNumber
@@ -423,7 +1409,7 @@ export const addRating = async (req, res, next) => {
     await purchase.save();
 
     // Update store average rating (in a real app, you'd have a rating system)
-    const Store = require("../models/Store.model.js");
+    // const Store = require("../models/Store.model.js");
     const store = await Store.findById(purchase.storeId);
 
     res.status(200).json({
@@ -449,7 +1435,7 @@ export const getStoreSalesReport = async (req, res, next) => {
     const { storeId } = req.params;
     const { startDate, endDate, groupBy = "day" } = req.query;
 
-    const Store = require("../models/Store.model.js");
+    // const Store = require("../models/Store.model.js");
     const store = await Store.findById(storeId);
 
     if (!store) {
@@ -590,7 +1576,7 @@ export const getStoreSalesReport = async (req, res, next) => {
 // @desc    Export purchases to Excel
 // @route   GET /api/purchases/export
 // @access  Private (Admin)
-export const exportPurchases = async (req, res, next) => {
+export const exportPurchases1 = async (req, res, next) => {
   try {
     const { startDate, endDate, storeId } = req.query;
 
@@ -613,7 +1599,7 @@ export const exportPurchases = async (req, res, next) => {
       .limit(1000); // Limit for export
 
     // Generate Excel file
-    const { exportSalesReportToExcel } = require("../utils/excelHelper");
+    // const { exportSalesReportToExcel } = require("../utils/excelHelper");
     const result = await exportSalesReportToExcel(purchases);
 
     res.download(result.filePath, result.fileName, (err) => {
@@ -626,7 +1612,48 @@ export const exportPurchases = async (req, res, next) => {
       }
 
       // Clean up file after download
-      const fs = require("fs");
+      // const fs = require("fs");
+
+      fs.unlinkSync(result.filePath);
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+export const exportPurchases = async (req, res, next) => {
+  try {
+    const { startDate, endDate, storeId } = req.query;
+
+    const query = { status: "COMPLETED" };
+
+    if (startDate || endDate) {
+      query.createdAt = {};
+      if (startDate) query.createdAt.$gte = new Date(startDate);
+      if (endDate) query.createdAt.$lte = new Date(endDate);
+    }
+
+    if (storeId) {
+      query.storeId = storeId;
+    }
+
+    const purchases = await Purchase.find(query)
+      .populate("storeId", "name location.city location.area")
+      .populate("userId", "name mobile")
+      .sort({ createdAt: -1 })
+      .limit(1000);
+
+    const result = await exportSalesReportToExcel(purchases);
+
+    res.download(result.filePath, result.fileName, (err) => {
+      if (err) {
+        console.error("Error downloading file:", err);
+        return res.status(500).json({
+          success: false,
+          error: "Error downloading file",
+        });
+      }
+
       fs.unlinkSync(result.filePath);
     });
   } catch (error) {
@@ -647,6 +1674,7 @@ export const getMyPurchases = async (req, res, next) => {
       .skip((page - 1) * limit)
       .limit(Number(limit));
 
+    // console.log("purchases", purchases);
     const total = await Purchase.countDocuments({ userId: req.user.id });
 
     res.json({
@@ -659,6 +1687,30 @@ export const getMyPurchases = async (req, res, next) => {
     next(error);
   }
 };
+
+export const getMyRecordedPurchases = async (req, res) => {
+    try {
+        const staffId = req.staff._id
+
+        const purchases = await Purchase.find({ staffId })
+            .populate('userId', 'name email')
+            .populate('storeId', 'name location')
+            .sort({ createdAt: -1 })
+
+        res.status(200).json({
+            success: true,
+            count: purchases.length,
+            purchases,
+        })
+    } catch (error) {
+        console.error('Error fetching staff purchases:', error)
+
+        res.status(500).json({
+            success: false,
+            error: 'Failed to fetch staff purchases',
+        })
+    }
+}
 
 // @desc    Get purchases for a store
 // @route   GET /api/purchases/store/:storeId

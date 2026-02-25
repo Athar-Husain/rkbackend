@@ -75,35 +75,55 @@ export const adminProtect = async (req, res, next) => {
 // ================================
 // Staff Protect
 // ================================
-export const staffProtect = async (req, res, next) => {
-  const { storeId, username, password } = req.body;
 
-  if (!storeId || !username || !password) {
-    return res
-      .status(400)
-      .json({ success: false, error: "Store credentials required" });
+// ================================
+// Staff Protect (JWT-based)
+// ================================
+export const staffProtect = async (req, res, next) => {
+  let token;
+
+  // Get token from headers or cookies
+  if (req.headers.authorization?.startsWith("Bearer")) {
+    token = req.headers.authorization.split(" ")[1];
+  } else if (req.cookies?.token) {
+    token = req.cookies.token;
   }
+
+  if (!token)
+    return res
+      .status(401)
+      .json({ success: false, error: "Staff not authorized" });
 
   try {
-    const staff = await Staff.findOne({ storeId, username }).select(
-      "+password",
-    );
+    // Verify JWT
+    const decoded = jwt.verify(token, process.env.JWT_SECRET);
 
-    if (!staff)
+    // Fetch staff by decoded id
+    const staff = await Staff.findById(decoded.id).select("-password");
+
+    if (!staff) {
       return res.status(401).json({ success: false, error: "Staff not found" });
+    }
 
-    const isMatch = await staff.matchPassword(password);
-    if (!isMatch)
+    // Optionally, check role in token
+    if (decoded.role && decoded.role.toLowerCase() !== "staff") {
       return res
-        .status(401)
-        .json({ success: false, error: "Invalid password" });
+        .status(403)
+        .json({ success: false, error: "Access denied: Not a staff" });
+    }
 
-    req.staff = staff;
+    req.staff = staff; // attach staff to request
     next();
   } catch (err) {
-    return res.status(500).json({ success: false, error: "Server error" });
+    return res
+      .status(401)
+      .json({ success: false, error: "Invalid or expired token" });
   }
 };
+
+// import jwt from "jsonwebtoken";
+// import Staff from "../models/Staff.model.js";
+// import mongoose from "mongoose";
 
 // ================================
 // Admin or Staff Protect
@@ -177,4 +197,42 @@ export const generateToken = (id, role = "user") => {
   return jwt.sign({ id, role }, process.env.JWT_SECRET, {
     expiresIn: process.env.JWT_EXPIRE || "7d",
   });
+};
+
+
+
+export const AllProtect = async (req, res, next) => {
+  try {
+    let token;
+
+    if (
+      req.headers.authorization &&
+      req.headers.authorization.startsWith("Bearer")
+    ) {
+      token = req.headers.authorization.split(" ")[1];
+    }
+
+    if (!token)
+      return res.status(401).json({ message: "Not authorized" });
+
+    const decoded = jwt.verify(token, process.env.JWT_SECRET);
+
+    const models = { User, Staff, Admin };
+    const Model = models[decoded.userModel];
+
+    if (!Model)
+      return res.status(401).json({ message: "Invalid role" });
+
+    const user = await Model.findById(decoded.id).select("-password");
+
+    if (!user)
+      return res.status(401).json({ message: "User not found" });
+
+    req.user = user;
+    req.userModel = decoded.userModel;
+
+    next();
+  } catch (err) {
+    return res.status(401).json({ message: "Unauthorized" });
+  }
 };

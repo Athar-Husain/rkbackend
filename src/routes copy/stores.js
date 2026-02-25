@@ -1,16 +1,64 @@
-const express = require("express");
+import express from "express";
+import {
+  createStore,
+  getAllStoresAdmin,
+  getStoreByIdAdmin,
+  updateStore,
+  toggleStoreStatus,
+  getStores,
+  getNearbyStores,
+  getStoreById,
+  getStoreHours,
+  staffLogin,
+  getStoreDashboard,
+} from "../controllers/storeController.js";
+import { staffProtect, adminProtect } from "../middleware/auth.js";
+
 const router = express.Router();
-const storeController = require("../controllers/storeController");
-const { protect, staffProtect } = require("../middleware/auth");
 
+// ========================
 // Public routes
-router.get("/", storeController.getStores);
-router.get("/nearby", storeController.getNearbyStores);
-router.get("/:id", storeController.getStoreById);
-router.get("/:id/hours", storeController.getStoreHours);
+// ========================
 
+// Get all stores (with filters, pagination)
+router.get("/getStores", getStores);
+
+// Get stores near a location
+router.get("/nearby", getNearbyStores);
+
+// Get single store by ID
+router.get("/getStoreById/:id", getStoreById);
+
+// Get store working hours
+router.get("/getStoreHours/:id/hours", getStoreHours);
+
+// ========================
 // Store staff routes
-router.post("/staff-login", storeController.staffLogin);
-router.get("/:id/dashboard", staffProtect, storeController.getStoreDashboard);
+// ========================
 
-module.exports = router;
+// Staff login
+router.post("/staff-login", staffLogin);
+
+// Staff dashboard (protected)
+router.get("/getStoreD/:id/dashboard", staffProtect, getStoreDashboard);
+
+// ========================
+// Admin routes
+// ========================
+
+// Create a new store
+router.post("/createStore", adminProtect, createStore);
+
+// Get all stores for admin
+router.get("/getAllStores", adminProtect, getAllStoresAdmin);
+
+// Get single store by ID for admin
+router.get("/getStoreById/:id", adminProtect, getStoreByIdAdmin);
+
+// Update store details
+router.put("/updateStore/:id", adminProtect, updateStore);
+
+// Toggle store active/inactive
+router.patch("/toggleStoreStatus/:id/status", adminProtect, toggleStoreStatus);
+
+export default router;

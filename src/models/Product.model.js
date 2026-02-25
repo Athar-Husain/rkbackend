@@ -6,7 +6,7 @@ const productSchema = new mongoose.Schema(
     // Basic Information
     sku: {
       type: String,
-      required: [true, "SKU is required"],
+      // required: [true, "SKU is required"],
       unique: true,
       trim: true,
       uppercase: true,

@@ -121,6 +121,85 @@ export const getProductsold = async (req, res, next) => {
   }
 };
 
+// @desc    Get unique categories and their subcategories
+// @route   GET /api/products/categories-list
+// @access  Public
+export const getCategoriesList1 = async (req, res, next) => {
+  try {
+    const data = await Product.aggregate([
+      { $match: { isActive: true } },
+      {
+        $group: {
+          _id: "$category",
+          subcategories: { $addToSet: "$subcategory" },
+        },
+      },
+      {
+        $project: {
+          category: "$_id",
+          subcategories: {
+            $filter: {
+              input: "$subcategories",
+              as: "sub",
+              cond: { $ne: ["$$sub", null] },
+            },
+          },
+          _id: 0,
+        },
+      },
+      { $sort: { category: 1 } },
+    ]);
+
+    res.status(200).json({
+      success: true,
+      data,
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+// @desc    Get unique categories and their subcategories directly from products
+// @route   GET /api/products/categories-list
+// @access  Public
+export const getCategoriesList = async (req, res, next) => {
+  try {
+    const data = await Product.aggregate([
+      { $match: { isActive: true } },
+      {
+        $group: {
+          // Grouping ensures uniqueness
+          _id: "$category",
+          subcategories: { $addToSet: "$subcategory" },
+        },
+      },
+      {
+        $project: {
+          category: "$_id",
+          subcategories: {
+            $filter: {
+              input: "$subcategories",
+              as: "sub",
+              // Filter out null or empty subcategories
+              cond: {
+                $and: [{ $ne: ["$$sub", null] }, { $ne: ["$$sub", ""] }],
+              },
+            },
+          },
+          _id: 0,
+        },
+      },
+      { $sort: { category: 1 } },
+    ]);
+
+    res.status(200).json({
+      success: true,
+      data, // Returns [{ category: 'mobile', subcategories: ['android', 'ios'] }, ...]
+    });
+  } catch (error) {
+    next(error);
+  }
+};
 // @desc    Add new product
 // @route   POST /api/products
 // @access  Admin / Seller
@@ -161,6 +240,13 @@ export const addProduct = async (req, res, next) => {
       return res.status(400).json({
         success: false,
         error: "Required fields are missing",
+      });
+    }
+
+    if (sellingPrice > mrp) {
+      return res.status(400).json({
+        success: false,
+        error: "Selling price cannot exceed MRP",
       });
     }
 
@@ -232,7 +318,10 @@ export const addProduct = async (req, res, next) => {
 // @access  Admin / Seller
 export const updateProduct = async (req, res, next) => {
   try {
-    const { id } = req.params;
+    const { id } = req.body;
+
+    // console.log("req body", req.body);
+    // console.log("req params", req.params);
     const updateFields = { ...req.body };
 
     // Uppercase SKU and category if provided

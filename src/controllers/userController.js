@@ -213,7 +213,11 @@ export const getAllUsers = async (req, res, next) => {
       .select("-password -deviceTokens")
       .skip(skip)
       .limit(parseInt(limit))
-      .sort({ createdAt: -1 });
+      .sort({ createdAt: -1 })
+      .populate({
+        path: "city",
+        select: "city",
+      });
 
     const total = await User.countDocuments();
 

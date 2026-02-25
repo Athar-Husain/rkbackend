@@ -16,6 +16,8 @@ import {
   getUserSpendingReport,
   exportPurchases,
   deletePurchase,
+  previewPurchase,
+  getMyRecordedPurchases,
 } from "../controllers/purchaseController.js";
 import {
   adminProtect,
@@ -53,6 +55,8 @@ router.patch("/updateFeedback/:id/feedback", protect, updateFeedback);
 
 // Record purchase (POS)
 router.post("/recordPurchase", staffProtect, recordPurchase);
+router.post("/previewPurchase", staffProtect, previewPurchase);
+router.get("/getMyRecordedPurchases", staffProtect, getMyRecordedPurchases);
 
 // Get store purchases
 router.get("/store/:storeId", adminStaffProtect, getStorePurchases);

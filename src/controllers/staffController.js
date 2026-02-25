@@ -1,286 +1,627 @@
-import Staff from "../models/Staff.model.js";
-import NotificationService from "../services/notificationService.js";
-import Referral from "../models/Referral.model.js";
-import { generateToken } from "../middleware/auth.js";
-import { formatCurrency } from "../utils/common.js";
-import {
-  generatePurposeOTP,
-  verifyPurposeOTP,
-  checkOTPExists,
-} from "../services/otpService.js";
-import asyncHandler from "express-async-handler";
 import jwt from "jsonwebtoken";
+import bcrypt from "bcryptjs";
+import Staff from "../models/Staff.model.js";
+import { sendDualOTP, verifyOTP } from "../services/otp.service.js";
+import logger from "../utils/logger.js";
+import { generateToken, generateRefreshToken } from "../utils/token.js";
+import { validateResetPasswordInput } from "../utils/validators.js";
+// import { ConfigurationServicePlaceholders } from "aws-sdk/lib/config_service_placeholders.js";
 
-// ================================
-// Send OTP to mobile
-// ================================
-export const sendOTP = async (req, res, next) => {
+/* ---------------- HELPERS ---------------- */
+const fail = (res, status, message) =>
+  res.status(status).json({ success: false, message });
+
+const maskEmail = (e) => e.split("@")[0] + "@***";
+const maskMobile = (m) => `${m.slice(0, 3)}***${m.slice(-3)}`;
+
+// FCM Registration Helper
+const registerOrUpdateFCMToken = async (
+  staffId,
+  deviceToken,
+  platform = "android",
+  deviceId = null,
+) => {
   try {
-    const { mobile } = req.body;
-    if (!mobile)
-      return res
-        .status(400)
-        .json({ success: false, error: "Please provide mobile number" });
+    const staff = await Staff.findById(staffId);
+    if (!staff) return;
 
-    const user = await Staff.findOne({ mobile });
-    const isResend = await checkOTPExists(mobile);
+    const thirtyDaysAgo = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
+    staff.deviceTokens = staff.deviceTokens.filter(
+      (dt) => dt.lastUsed > thirtyDaysAgo,
+    );
 
-    const result = await generatePurposeOTP(mobile, "LOGIN", 5); // Using generic login OTP
-    res.status(200).json({
-      success: true,
-      message: result.message,
-      userExists: !!user,
-      otp: result.otp, // only for dev/debug
-    });
-  } catch (error) {
-    next(error);
-  }
-};
+    const existingTokenIndex = staff.deviceTokens.findIndex(
+      (dt) =>
+        dt.token === deviceToken || (deviceId && dt.deviceId === deviceId),
+    );
 
-// ================================
-// Verify OTP and login/register
-// ================================
-export const verifyOTP = async (req, res, next) => {
-  try {
-    const { mobile, otp, name, city, area, referralCode } = req.body;
-    if (!mobile || !otp)
-      return res
-        .status(400)
-        .json({ success: false, error: "Please provide mobile and OTP" });
-
-    const otpResult = await verifyPurposeOTP(mobile, "LOGIN", otp);
-    if (!otpResult.success)
-      return res.status(400).json({ success: false, error: otpResult.error });
-
-    let user = await Staff.findOne({ mobile });
-    let isNewUser = false;
-
-    if (!user) {
-      if (!name || !city || !area)
-        return res.status(400).json({
-          success: false,
-          error: "Please provide name, city, and area for registration",
-        });
-
-      let referredBy = null;
-      if (referralCode) {
-        const referrer = await Staff.findOne({ referralCode });
-        if (referrer) referredBy = referrer._id;
-      }
-
-      user = await Staff.create({
-        mobile,
-        name,
-        city,
-        area,
-        referredBy,
-        isVerified: true,
-      });
-      isNewUser = true;
-
-      if (referredBy) {
-        await NotificationService.sendPushNotification(
-          referredBy,
-          "New Referral!",
-          `${name} registered using your referral code`,
-        );
-      }
-
-      await NotificationService.sendSMS(
-        mobile,
-        `Welcome! Your account has been created successfully.`,
-      );
+    if (existingTokenIndex >= 0) {
+      staff.deviceTokens[existingTokenIndex].token = deviceToken;
+      staff.deviceTokens[existingTokenIndex].platform = platform;
+      staff.deviceTokens[existingTokenIndex].lastUsed = new Date();
+      if (deviceId) staff.deviceTokens[existingTokenIndex].deviceId = deviceId;
     } else {
-      user.lastLogin = new Date();
-      await user.save();
+      if (staff.deviceTokens.length >= 5) {
+        staff.deviceTokens.sort((a, b) => a.lastUsed - b.lastUsed);
+        staff.deviceTokens.shift();
+      }
+      staff.deviceTokens.push({
+        token: deviceToken,
+        platform,
+        deviceId,
+        lastUsed: new Date(),
+      });
     }
 
-    const token = generateToken(user._id);
-    const userResponse = user.toObject();
-    delete userResponse.deviceTokens;
+    await staff.save();
+    logger.info(`FCM token registered/updated for staff ${staffId}`);
+    return true;
+  } catch (error) {
+    logger.error("Error registering FCM token:", error);
+    return false;
+  }
+};
 
-    res.status(200).json({
+/* =====================================================
+   ADMIN → CREATE STAFF (NO OTP)
+===================================================== */
+export const createStaff1 = async (req, res) => {
+  try {
+    const { name, email, mobile, password, role } = req.body;
+
+    if (!name || !email || !mobile || !password) {
+      return fail(res, 400, "All fields are required");
+    }
+
+    const existingStaff = await Staff.findOne({
+      $or: [{ email: email.toLowerCase() }, { mobile }],
+    });
+
+    if (existingStaff) {
+      return fail(res, 409, "Staff with same email or mobile already exists");
+    }
+
+    const hashedPassword = await bcrypt.hash(password, 12);
+
+    const staff = new Staff({
+      name: name.trim(),
+      email: email.toLowerCase(),
+      mobile: mobile.trim(),
+      password: hashedPassword,
+      role: role || "staff",
+      isActive: true,
+      isVerified: true, // auto-verified by admin
+      lastLogin: new Date(),
+    });
+
+    await staff.save();
+
+    return res.status(201).json({
       success: true,
-      token,
-      isNewUser,
-      user: userResponse,
-      message: isNewUser ? "Registration successful" : "Login successful",
+      message: "Staff created successfully",
+      user: {
+        id: staff._id,
+        name: staff.name,
+        email: staff.email,
+        mobile: staff.mobile,
+        role: staff.role,
+        isActive: staff.isActive,
+      },
     });
   } catch (error) {
-    next(error);
+    logger.error("Create staff error:", error);
+    return fail(res, 500, "Failed to create staff");
   }
 };
 
-// ================================
-// Staff Profile
-// ================================
-export const getProfile = async (req, res) => {
+export const createStaff2 = async (req, res) => {
   try {
-    const user = await Staff.findById(req.user.id).select(
-      "-password -deviceTokens",
-    );
-    if (!user) return res.status(404).json({ message: "Staff not found" });
-    res.status(200).json({ user });
-  } catch (error) {
-    res.status(500).json({ message: "Server error" });
-  }
-};
+    const { storeId, name, username, password, role, permissions } = req.body;
 
-export const updateProfile = async (req, res) => {
-  try {
-    const updates = {};
-    ["name", "email", "city", "area", "preferences"].forEach((field) => {
-      if (req.body[field] !== undefined) updates[field] = req.body[field];
-    });
-
-    const updated = await Staff.findByIdAndUpdate(req.user.id, updates, {
-      new: true,
-      runValidators: true,
-    }).select("-deviceTokens");
-    res.status(200).json({
-      success: true,
-      user: updated,
-      message: "Profile updated successfully",
-    });
-  } catch (error) {
-    res.status(500).json({ message: "Server error" });
-  }
-};
-
-// ================================
-// Staff Password Management
-// ================================
-export const forgotPassword = async (req, res, next) => {
-  try {
-    const { mobile } = req.body;
-    if (!mobile)
-      return res
-        .status(400)
-        .json({ success: false, error: "Please provide mobile number" });
-
-    const user = await Staff.findOne({ mobile });
-    if (!user)
-      return res.status(404).json({ success: false, error: "Staff not found" });
-
-    const result = await generatePurposeOTP(mobile, "PASSWORD_RESET", 30);
-    res.status(200).json({ success: true, message: result.message });
-  } catch (error) {
-    next(error);
-  }
-};
-
-export const resetPassword = async (req, res, next) => {
-  try {
-    const { mobile, otp, newPassword } = req.body;
-    if (!mobile || !otp || !newPassword)
+    if (!storeId || !name || !username || !password) {
       return res.status(400).json({
         success: false,
-        error: "Please provide mobile, OTP, and new password",
+        message: "All required fields must be provided",
       });
+    }
 
-    const otpResult = await verifyPurposeOTP(mobile, "PASSWORD_RESET", otp);
-    if (!otpResult.success)
-      return res.status(400).json({ success: false, error: otpResult.error });
-
-    const user = await Staff.findOne({ mobile });
-    if (!user)
-      return res.status(404).json({ success: false, error: "Staff not found" });
-
-    user.password = newPassword;
-    user.passwordResetAt = new Date();
-    await user.save();
-
-    await NotificationService.sendSMS(
-      mobile,
-      "Your password has been reset successfully.",
-    );
-
-    res
-      .status(200)
-      .json({ success: true, message: "Password reset successfully" });
-  } catch (error) {
-    next(error);
-  }
-};
-
-// ================================
-// Staff Device Management
-// ================================
-export const registerDevice = async (req, res, next) => {
-  try {
-    const { token, platform = "android" } = req.body;
-    if (!token)
+    const existingStaff = await Staff.findOne({
+      username: username.toLowerCase().trim(),
+    });
+    if (existingStaff) {
       return res
-        .status(400)
-        .json({ success: false, error: "Please provide device token" });
+        .status(409)
+        .json({ success: false, message: "Username already exists" });
+    }
 
-    const result = await NotificationService.registerDeviceToken(
-      req.user.id,
-      token,
-      platform,
-    );
-    res.status(200).json(result);
+    const staff = new Staff({
+      storeId,
+      name: name.trim(),
+      username: username.toLowerCase().trim(),
+      password, // hashed automatically in pre-save hook
+      role: role?.toLowerCase() || "staff",
+      permissions: permissions || undefined, // defaults applied by schema
+      isActive: true,
+    });
+
+    await staff.save();
+
+    return res.status(201).json({
+      success: true,
+      message: "Staff created successfully",
+      user: {
+        id: staff._id,
+        storeId: staff.storeId,
+        name: staff.name,
+        username: staff.username,
+        role: staff.role,
+        permissions: staff.permissions,
+        isActive: staff.isActive,
+      },
+    });
   } catch (error) {
-    next(error);
+    console.error("Create staff error:", error);
+    return res
+      .status(500)
+      .json({ success: false, message: "Failed to create staff" });
   }
 };
 
-export const logout = async (req, res) => {
-  res.status(200).json({ success: true, message: "Logged out successfully" });
-};
-
-// ================================
-// Login Status Check
-// ================================
-export const getLoginStatus = asyncHandler(async (req, res) => {
-  const authHeader = req.headers.authorization;
-  if (!authHeader || !authHeader.startsWith("Bearer ")) return res.json(false);
-
-  const token = authHeader.split(" ")[1];
-  try {
-    const verified = jwt.verify(token, process.env.JWT_SECRET);
-    res.json(!!verified);
-  } catch (error) {
-    res.status(500).json({ error: error.message });
-  }
-});
-
-// ================================
-// Dashboard (Staff)
-export const getDashboard = async (req, res) => {
-  try {
-    const user = await Staff.findById(req.user.id).select("-deviceTokens");
-    res
-      .status(200)
-      .json({ success: true, user, message: "Dashboard data placeholder" });
-  } catch (error) {
-    res.status(500).json({ message: "Server error" });
-  }
-};
-// ================================
-// Admin: Manage Staff Members
-// ================================
+// CREATE STAFF
 export const createStaff = async (req, res) => {
   try {
-    const { firstName, lastName, phone, email, password, role, area } =
-      req.body;
-
-    const existing = await Staff.findOne({ $or: [{ email }, { phone }] });
-    if (existing)
-      return res.status(400).json({ message: "Staff already exists" });
-
-    const staff = await Staff.create({
-      firstName,
-      lastName,
-      phone,
+    const {
+      storeId,
+      name,
       email,
+      mobile,
+      username,
       password,
       role,
-      area,
+      permissions,
+      isActive,
+    } = req.body;
+
+    console.log("req.body", req.body);
+
+    // Validate required fields
+    if (!storeId || !name || !username || !password || !mobile) {
+      return res.status(400).json({
+        success: false,
+        message: "All required fields must be provided",
+      });
+    }
+
+    // Check for duplicate username, email, or mobile
+    const existingStaff = await Staff.findOne({
+      $or: [
+        { username: username.toLowerCase().trim() },
+        { email: email?.toLowerCase().trim() },
+        { mobile: mobile.trim() },
+      ],
     });
-    res.status(201).json({ message: "Staff created successfully", staff });
+    if (existingStaff) {
+      return res.status(409).json({
+        success: false,
+        message: "Username, Email or Mobile already exists",
+      });
+    }
+
+    const staff = new Staff({
+      storeId,
+      name: name.trim(),
+      email: email?.toLowerCase().trim(),
+      mobile: mobile.trim(),
+      username: username.toLowerCase().trim(),
+      password, // hashed automatically in pre-save hook
+      role: role?.toLowerCase() || "staff",
+      permissions: permissions || undefined,
+      isActive: isActive ?? true,
+    });
+
+    await staff.save();
+
+    return res.status(201).json({
+      success: true,
+      message: "Staff created successfully",
+      user: {
+        id: staff._id,
+        storeId: staff.storeId,
+        name: staff.name,
+        email: staff.email,
+        mobile: staff.mobile,
+        username: staff.username,
+        role: staff.role,
+        permissions: staff.permissions,
+        isActive: staff.isActive,
+      },
+    });
   } catch (error) {
-    res.status(500).json({ message: "Server error" });
+    console.error("Create staff error:", error);
+    return res
+      .status(500)
+      .json({ success: false, message: "Failed to create staff" });
+  }
+};
+
+// UPDATE STAFF
+export const updateStaff = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const {
+      name,
+      email,
+      mobile,
+      username,
+      password,
+      role,
+      permissions,
+      isActive,
+      storeId,
+    } = req.body;
+
+    const staff = await Staff.findById(id);
+    if (!staff)
+      return res
+        .status(404)
+        .json({ success: false, message: "Staff not found" });
+
+    // Check duplicates if changed
+    if (username && username.toLowerCase().trim() !== staff.username) {
+      const exists = await Staff.findOne({
+        username: username.toLowerCase().trim(),
+      });
+      if (exists)
+        return res
+          .status(409)
+          .json({ success: false, message: "Username already exists" });
+    }
+    if (email && email.toLowerCase().trim() !== staff.email) {
+      const exists = await Staff.findOne({ email: email.toLowerCase().trim() });
+      if (exists)
+        return res
+          .status(409)
+          .json({ success: false, message: "Email already exists" });
+    }
+    if (mobile && mobile.trim() !== staff.mobile) {
+      const exists = await Staff.findOne({ mobile: mobile.trim() });
+      if (exists)
+        return res
+          .status(409)
+          .json({ success: false, message: "Mobile already exists" });
+    }
+
+    // Update fields
+    staff.storeId = storeId ?? staff.storeId;
+    staff.name = name ?? staff.name;
+    staff.email = email?.toLowerCase().trim() ?? staff.email;
+    staff.mobile = mobile?.trim() ?? staff.mobile;
+    staff.username = username?.toLowerCase().trim() ?? staff.username;
+    staff.role = role?.toLowerCase() ?? staff.role;
+    staff.permissions = permissions ?? staff.permissions;
+    staff.isActive = isActive ?? staff.isActive;
+    if (password) staff.password = password;
+
+    await staff.save();
+
+    return res
+      .status(200)
+      .json({ success: true, message: "Staff updated successfully", staff });
+  } catch (error) {
+    console.error("Update staff error:", error);
+    return res
+      .status(500)
+      .json({ success: false, message: "Failed to update staff" });
+  }
+};
+
+/* =====================================================
+   STAFF LOGIN → SEND OTP
+===================================================== */
+export const staffSigninSendOTP = async (req, res) => {
+  try {
+    const { emailOrMobile } = req.body;
+    const staff = await Staff.findOne({
+      $or: [
+        { email: emailOrMobile.toLowerCase().trim() },
+        { mobile: emailOrMobile.trim() },
+      ],
+    }).lean();
+
+    if (!staff) return fail(res, 404, "Staff not found");
+    if (!staff.isActive) return fail(res, 403, "Account deactivated");
+    // if (!staff.isVerified) return fail(res, 403, "Staff not verified");
+
+    await sendDualOTP({
+      email: staff.email,
+      mobile: staff.mobile,
+      purpose: "LOGIN",
+    });
+
+    const tempToken = jwt.sign(
+      {
+        staffId: staff._id,
+        email: staff.email,
+        mobile: staff.mobile,
+        purpose: "LOGIN",
+      },
+      process.env.JWT_TEMP_SECRET,
+      { expiresIn: "10m" },
+    );
+
+    return res.json({
+      success: true,
+      message: "OTP sent",
+      tempToken,
+      expiresIn: 600,
+    });
+  } catch (error) {
+    logger.error("Staff signin send OTP error:", error);
+    return fail(res, 500, "Failed to send OTP");
+  }
+};
+
+/* =====================================================
+   STAFF LOGIN → VERIFY OTP
+===================================================== */
+export const staffSigninVerifyOTP = async (req, res) => {
+  try {
+    const {
+      otp,
+      tempToken,
+      deviceToken,
+      platform = "android",
+      deviceId,
+    } = req.body;
+    if (!otp || !tempToken) return fail(res, 400, "OTP and token are required");
+
+    const decoded = jwt.verify(tempToken, process.env.JWT_TEMP_SECRET);
+    if (decoded.purpose !== "LOGIN") return fail(res, 401, "Invalid token");
+
+    const staff = await Staff.findById(decoded.staffId);
+    if (!staff) return fail(res, 404, "Staff not found");
+
+    await verifyOTP({
+      identifier: decoded.email,
+      type: "email",
+      otp,
+      purpose: "LOGIN",
+    });
+
+    staff.lastLogin = new Date();
+    staff.lastActive = new Date();
+    await staff.save();
+
+    if (deviceToken) {
+      await registerOrUpdateFCMToken(
+        staff._id,
+        deviceToken,
+        platform,
+        deviceId,
+      );
+    }
+
+    const authToken = generateToken(staff._id);
+    const refreshToken = generateRefreshToken(staff._id);
+
+    return res.json({
+      success: true,
+      message: "Login successful",
+      token: authToken,
+      refreshToken,
+      expiresIn: 3600,
+      user: {
+        id: staff._id,
+        name: staff.name,
+        email: staff.email,
+        mobile: staff.mobile,
+        userType: staff.userType,
+        role: staff.role,
+      },
+    });
+  } catch (error) {
+    logger.error("Staff signin verify OTP error:", error);
+    if (error.name === "TokenExpiredError")
+      return fail(res, 401, "OTP token expired");
+    if (error.name === "JsonWebTokenError")
+      return fail(res, 401, "Invalid OTP token");
+    return fail(res, 400, error.message || "Failed to verify OTP");
+  }
+};
+
+/* =====================================================
+   STAFF FCM TOKEN
+===================================================== */
+export const registerStaffFCMToken = async (req, res) => {
+  try {
+    const { deviceToken, platform = "android", deviceId } = req.body;
+    if (!deviceToken) return fail(res, 400, "Device token required");
+
+    await registerOrUpdateFCMToken(
+      req.user._id,
+      // req.staff._id,
+      deviceToken,
+      platform,
+      deviceId,
+    );
+
+    return res.json({
+      success: true,
+      message: "FCM token registered successfully",
+    });
+  } catch (error) {
+    logger.error("Register staff FCM error:", error);
+    return fail(res, 500, "Failed to register device token");
+  }
+};
+
+/* =====================================================
+   STAFF LOGOUT
+===================================================== */
+export const staffLogout = async (req, res) => {
+  try {
+    const { deviceToken, deviceId } = req.body;
+    // const staff = await Staff.findById(req.staff._id);
+    const staff = await Staff.findById(req.user._id);
+    if (!staff) return fail(res, 404, "Staff not found");
+
+    if (deviceToken || deviceId) {
+      staff.deviceTokens = staff.deviceTokens.filter(
+        (dt) => dt.token !== deviceToken && dt.deviceId !== deviceId,
+      );
+    } else {
+      staff.deviceTokens = [];
+    }
+
+    await staff.save();
+    return res.json({ success: true, message: "Logged out successfully" });
+  } catch (error) {
+    logger.error("Staff logout error:", error);
+    return fail(res, 500, "Logout failed");
+  }
+};
+
+/* =====================================================
+   STAFF PROFILE
+===================================================== */
+export const getStaffProfile = async (req, res) => {
+  try {
+    // const staff = await Staff.findById(req.staff._id).select(
+    const staff = await Staff.findById(req.user._id).select(
+      "-password -__v -deviceTokens",
+    );
+    if (!staff) return fail(res, 404, "Staff not found");
+
+    return res.json({
+      success: true,
+      user: {
+        ...staff.toObject(),
+        maskedEmail: maskEmail(staff.email),
+        maskedMobile: maskMobile(staff.mobile),
+      },
+    });
+  } catch (error) {
+    logger.error("Get staff profile error:", error);
+    return fail(res, 500, "Failed to fetch profile");
+  }
+};
+
+export const updateStaffProfile = async (req, res) => {
+  try {
+    const allowedUpdates = ["name", "profileImage", "role"];
+    const updateData = {};
+
+    Object.keys(req.body).forEach((key) => {
+      if (allowedUpdates.includes(key)) updateData[key] = req.body[key];
+    });
+
+    if (Object.keys(updateData).length === 0)
+      return fail(res, 400, "No valid updates");
+
+    const staff = await Staff.findByIdAndUpdate(
+      // req.staff._id,
+      req.user._id,
+      { $set: updateData },
+      { new: true, runValidators: true },
+    ).select("-password -__v -deviceTokens");
+
+    return res.json({ success: true, staff });
+  } catch (error) {
+    logger.error("Update staff profile error:", error);
+    return fail(res, 500, "Update failed");
+  }
+};
+
+/* =====================================================
+   STAFF REFRESH TOKEN
+===================================================== */
+export const staffRefreshToken = async (req, res) => {
+  try {
+    const { refreshToken } = req.body;
+    if (!refreshToken) return fail(res, 400, "Refresh token required");
+
+    const decoded = jwt.verify(refreshToken, process.env.JWT_REFRESH_SECRET);
+    const staff = await Staff.findById(decoded.staffId);
+    if (!staff) return fail(res, 404, "Staff not found");
+    if (!staff.isActive) return fail(res, 403, "Account disabled");
+
+    const newAccessToken = generateToken(staff._id);
+    const newRefreshToken = generateRefreshToken(staff._id);
+
+    return res.json({
+      success: true,
+      token: newAccessToken,
+      refreshToken: newRefreshToken,
+      expiresIn: 3600,
+    });
+  } catch (error) {
+    logger.error("Staff refresh token error:", error);
+    if (error.name === "TokenExpiredError")
+      return fail(res, 401, "Refresh token expired");
+    return fail(res, 401, "Invalid refresh token");
+  }
+};
+
+/* =====================================================
+   STAFF FORGOT/RESET PASSWORD
+===================================================== */
+export const staffForgotPassword = async (req, res) => {
+  try {
+    const { emailOrMobile } = req.body;
+    const staff = await Staff.findOne({
+      $or: [{ email: emailOrMobile.toLowerCase() }, { mobile: emailOrMobile }],
+    });
+
+    if (!staff)
+      return res.json({
+        success: true,
+        message: "If account exists, OTP sent",
+      });
+
+    await sendDualOTP({
+      email: staff.email,
+      mobile: staff.mobile,
+      purpose: "PASSWORD_RESET",
+    });
+
+    const resetToken = jwt.sign(
+      { staffId: staff._id, purpose: "PASSWORD_RESET" },
+      process.env.JWT_RESET_SECRET,
+      { expiresIn: "10m" },
+    );
+    return res.json({ success: true, resetToken, expiresIn: 600 });
+  } catch (error) {
+    logger.error("Staff forgot password error:", error);
+    return fail(res, 400, error.message);
+  }
+};
+
+export const staffResetPassword = async (req, res) => {
+  try {
+    validateResetPasswordInput(req.body);
+    const { resetToken, otp, newPassword } = req.body;
+
+    const decoded = jwt.verify(resetToken, process.env.JWT_RESET_SECRET);
+    if (decoded.purpose !== "PASSWORD_RESET")
+      return fail(res, 401, "Invalid reset token");
+
+    const staff = await Staff.findById(decoded.staffId);
+    if (!staff) return fail(res, 404, "Staff not found");
+
+    await verifyOTP({
+      identifier: staff.email,
+      type: "email",
+      otp,
+      purpose: "PASSWORD_RESET",
+    });
+
+    staff.password = newPassword;
+    await staff.save();
+
+    return res.json({ success: true, message: "Password reset successful" });
+  } catch (error) {
+    logger.error("Staff reset password error:", error);
+    return fail(res, 400, error.message);
   }
 };
 
@@ -305,24 +646,12 @@ export const getStaffById = async (req, res) => {
   }
 };
 
-export const updateStaff = async (req, res) => {
+export const getStaffDashboard = async (req, res) => {
   try {
-    const updates = {};
-    ["firstName", "lastName", "phone", "email", "role", "area"].forEach(
-      (key) => {
-        if (req.body[key] !== undefined) updates[key] = req.body[key];
-      },
-    );
-
-    const updated = await Staff.findByIdAndUpdate(req.params.id, updates, {
-      new: true,
-      runValidators: true,
-    }).select("-password");
-    if (!updated) return res.status(404).json({ message: "Staff not found" });
-
+    const user = await Staff.findById(req.user.id).select("-deviceTokens");
     res
       .status(200)
-      .json({ message: "Staff updated successfully", staff: updated });
+      .json({ success: true, user, message: "Dashboard data placeholder" });
   } catch (error) {
     res.status(500).json({ message: "Server error" });
   }
@@ -336,5 +665,40 @@ export const deleteStaff = async (req, res) => {
     res.status(200).json({ message: "Staff deleted successfully" });
   } catch (error) {
     res.status(500).json({ message: "Server error" });
+  }
+};
+
+export const getStaffLoginStatus = async (req, res) => {
+  try {
+    // console.log("req.user", req.staff);
+
+    const user = await Staff.findById(req.staff._id).select(
+      "_id name email mobile isActive isVerified lastLogin userType walletBalance deviceTokens",
+    );
+
+    if (!user) {
+      return res.status(404).json({
+        success: false,
+        message: "User not found",
+      });
+    }
+
+    return res.status(200).json({
+      success: true,
+      isLoggedIn: true,
+      user: {
+        ...user.toObject(),
+        // Don't send device tokens to frontend for security
+        deviceTokens: undefined,
+      },
+      deviceCount: user.deviceTokens.length,
+      lastActive: user.lastActive,
+    });
+  } catch (error) {
+    logger.error("Login status check error:", error);
+    return res.status(500).json({
+      success: false,
+      message: "Status check failed",
+    });
   }
 };

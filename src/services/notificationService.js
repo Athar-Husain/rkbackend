@@ -1,348 +1,335 @@
 import admin from "firebase-admin";
 import nodemailer from "nodemailer";
 import twilio from "twilio";
-import fs from "fs"; // Required to read the Firebase service account JSON
+import { createRequire } from "module";
+
 import User from "../models/User.model.js";
-import NotificationLog from "../models/NotificationLog.js";
+import Staff from "../models/Staff.model.js";
+import Admin from "../models/Admin.js";
+import NotificationLog from "../models/NotificationLog.model.js";
+// import NotificationLog from "../models/NotificationLog.js";
 
-// Initialize Firebase Admin SDK
+const require = createRequire(import.meta.url);
+
+/* ================= INITIALIZATION ================= */
+
 let firebaseInitialized = false;
-if (process.env.FIREBASE_SERVICE_ACCOUNT_KEY_PATH) {
-  try {
-    // In ES6, we read JSON files manually
-    const serviceAccount = JSON.parse(
-      fs.readFileSync(process.env.FIREBASE_SERVICE_ACCOUNT_KEY_PATH, "utf8"),
-    );
+let serviceAccount;
 
+try {
+  if (process.env.NODE_ENV === "production") {
+    serviceAccount = JSON.parse(process.env.FIREBASE_ADMIN_KEY);
+  } else {
+    serviceAccount = require("./firebase-service-account.json");
+  }
+
+  if (!admin.apps.length) {
     admin.initializeApp({
       credential: admin.credential.cert(serviceAccount),
     });
-    firebaseInitialized = true;
-    console.log("Firebase Admin SDK initialized");
-  } catch (error) {
-    console.error("Error initializing Firebase:", error);
-  }
-}
-
-// Initialize Twilio for SMS
-let twilioClient;
-if (process.env.TWILIO_ACCOUNT_SID && process.env.TWILIO_AUTH_TOKEN) {
-  twilioClient = twilio(
-    process.env.TWILIO_ACCOUNT_SID,
-    process.env.TWILIO_AUTH_TOKEN,
-  );
-}
-
-// Initialize email transporter
-let emailTransporter;
-if (
-  process.env.EMAIL_HOST &&
-  process.env.EMAIL_USER &&
-  process.env.EMAIL_PASS
-) {
-  emailTransporter = nodemailer.createTransport({
-    host: process.env.EMAIL_HOST,
-    port: process.env.EMAIL_PORT || 587,
-    secure: process.env.EMAIL_SECURE === "true",
-    auth: {
-      user: process.env.EMAIL_USER,
-      pass: process.env.EMAIL_PASS,
-    },
-  });
-}
-
-class NotificationService {
-  // Send push notification to user
-  static async sendPushNotification(userId, title, body, data = {}) {
-    try {
-      if (!firebaseInitialized) {
-        console.log("Firebase not initialized, skipping push notification");
-        return { success: false, message: "Firebase not configured" };
-      }
-
-      const user = await User.findById(userId);
-
-      if (!user || !user.deviceTokens || user.deviceTokens.length === 0) {
-        return { success: false, message: "User has no device tokens" };
-      }
-
-      // Get active device tokens
-      const tokens = user.deviceTokens
-        .filter(
-          (token) =>
-            token.token &&
-            token.lastActive > new Date(Date.now() - 30 * 24 * 60 * 60 * 1000),
-        )
-        .map((token) => token.token);
-
-      if (tokens.length === 0) {
-        return { success: false, message: "No active device tokens found" };
-      }
-
-      const message = {
-        notification: { title, body },
-        data: data,
-        tokens: tokens,
-      };
-
-      const response = await admin.messaging().sendEachForMulticast(message);
-
-      // Log the notification
-      await this.logNotification(userId, "PUSH", title, body, {
-        successCount: response.successCount,
-        failureCount: response.failureCount,
-        data: data,
-      });
-
-      return {
-        success: true,
-        sent: response.successCount,
-        failed: response.failureCount,
-        response: response.responses,
-      };
-    } catch (error) {
-      console.error("Error sending push notification:", error);
-      await this.logNotification(userId, "PUSH", title, body, {
-        error: error.message,
-        data: data,
-      });
-      throw new Error("Failed to send push notification");
-    }
   }
 
-  // Send SMS notification
-  static async sendSMS(mobile, message) {
-    try {
-      if (!twilioClient) {
-        console.log(`SMS not sent (Twilio not configured): ${message}`);
-        return { success: false, message: "SMS service not configured" };
+  firebaseInitialized = true;
+  console.log("🔥 Firebase Initialized");
+} catch (err) {
+  console.error("❌ Firebase Init Error:", err.message);
+}
+
+const twilioClient =
+  process.env.TWILIO_ACCOUNT_SID && process.env.TWILIO_AUTH_TOKEN
+    ? twilio(process.env.TWILIO_ACCOUNT_SID, process.env.TWILIO_AUTH_TOKEN)
+    : null;
+
+const emailTransporter =
+  process.env.EMAIL_HOST && process.env.EMAIL_USER
+    ? nodemailer.createTransport({
+        host: process.env.EMAIL_HOST,
+        port: process.env.EMAIL_PORT || 587,
+        secure: process.env.EMAIL_SECURE === "true",
+        auth: {
+          user: process.env.EMAIL_USER,
+          pass: process.env.EMAIL_PASS,
+        },
+      })
+    : null;
+
+/* ================= MODEL MAPPER ================= */
+
+const getModel = (userModel) => {
+  const models = { User, Staff, Admin };
+  const Model = models[userModel];
+  if (!Model) throw new Error("Invalid user model");
+  return Model;
+};
+
+/* ================= LOGGING ================= */
+
+const logNotification = async ({
+  userId,
+  userModel,
+  type,
+  title,
+  content,
+  category = "SYSTEM",
+  targetScreen,
+  targetId,
+  payload = {},
+  deliveryStatus = "SENT",
+  errorDetails,
+}) => {
+  try {
+    await NotificationLog.create({
+      userId,
+      userModel,
+      type,
+      title,
+      content,
+      category,
+      targetScreen,
+      targetId,
+      payload,
+      deliveryStatus,
+      errorDetails,
+    });
+  } catch (err) {
+    console.error("Notification Log Error:", err.message);
+  }
+};
+
+/* ================= PUSH ================= */
+
+export const sendPushNotification = async (
+  userId,
+  userModel,
+  title,
+  body,
+  navData = {},
+) => {
+  try {
+    if (!firebaseInitialized)
+      return { success: false, message: "Firebase not initialized" };
+
+    const Model = getModel(userModel);
+    const user = await Model.findById(userId).lean();
+    if (!user?.deviceTokens?.length)
+      return { success: false, message: "No device tokens" };
+
+    const tokens = user.deviceTokens.map((t) => t.token).filter(Boolean);
+    if (!tokens.length) return { success: false, message: "Invalid tokens" };
+
+    const message = {
+      tokens,
+      notification: { title, body },
+      data: Object.fromEntries(
+        Object.entries(navData).map(([k, v]) => [k, String(v)]),
+      ),
+      android: {
+        priority: "high",
+        notification: { sound: "default" },
+      },
+      apns: {
+        payload: { aps: { sound: "default", badge: 1 } },
+      },
+    };
+
+    const response = await admin.messaging().sendEachForMulticast(message);
+
+    const invalidTokens = [];
+
+    response.responses.forEach((r, index) => {
+      if (
+        !r.success &&
+        r.error?.code === "messaging/registration-token-not-registered"
+      ) {
+        invalidTokens.push(tokens[index]);
       }
+    });
 
-      const sms = await twilioClient.messages.create({
-        body: message,
-        from: process.env.TWILIO_PHONE_NUMBER,
-        to: `+91${mobile}`,
-      });
-
-      const user = await User.findOne({ mobile });
-      if (user) {
-        await this.logNotification(
-          user._id,
-          "SMS",
-          "SMS Notification",
-          message,
-          {
-            mobile,
-            sid: sms.sid,
+    if (invalidTokens.length) {
+      await Model.updateOne(
+        { _id: userId },
+        {
+          $pull: {
+            deviceTokens: { token: { $in: invalidTokens } },
           },
-        );
-      }
-
-      return { success: true, sid: sms.sid, message: "SMS sent successfully" };
-    } catch (error) {
-      console.error("Error sending SMS:", error);
-      throw new Error("Failed to send SMS");
+        },
+      );
     }
+
+    await logNotification({
+      userId,
+      userModel,
+      type: "PUSH",
+      title,
+      content: body,
+      category: navData.category,
+      targetScreen: navData.targetScreen,
+      targetId: navData.targetId,
+      payload: navData.payload,
+      deliveryStatus: response.successCount > 0 ? "DELIVERED" : "FAILED",
+    });
+
+    return { success: true };
+  } catch (err) {
+    await logNotification({
+      userId,
+      userModel,
+      type: "PUSH",
+      title,
+      content: body,
+      deliveryStatus: "FAILED",
+      errorDetails: err.message,
+    });
+    return { success: false };
   }
+};
 
-  // Send email notification
-  static async sendEmail(email, subject, htmlContent, textContent = "") {
-    try {
-      if (!emailTransporter) {
-        console.log(`Email not sent (Service not configured): ${subject}`);
-        return { success: false, message: "Email service not configured" };
-      }
+/**
+ * Send SMS and log
+ */
+export const sendSMS = async (userId, userModel, mobile, message) => {
+  if (!twilioClient) return { success: false };
+  try {
+    const sms = await twilioClient.messages.create({
+      body: message,
+      from: process.env.TWILIO_PHONE_NUMBER,
+      to: `+91${mobile}`,
+    });
 
-      const mailOptions = {
-        from: `"RK Electronics" <${process.env.EMAIL_FROM || process.env.EMAIL_USER}>`,
-        to: email,
-        subject: subject,
-        text: textContent,
-        html: htmlContent,
-      };
-
-      const info = await emailTransporter.sendMail(mailOptions);
-
-      const user = await User.findOne({ email });
-      if (user) {
-        await this.logNotification(user._id, "EMAIL", subject, textContent, {
-          email,
-          messageId: info.messageId,
-        });
-      }
-
-      return {
-        success: true,
-        messageId: info.messageId,
-        message: "Email sent successfully",
-      };
-    } catch (error) {
-      console.error("Error sending email:", error);
-      throw new Error("Failed to send email");
-    }
+    await logNotification(userId, userModel, "SMS", "SMS Alert", message, {
+      sid: sms.sid,
+    });
+    return { success: true };
+  } catch (err) {
+    return { success: false };
   }
+};
 
-  // Send WhatsApp message
-  static async sendWhatsApp(mobile, message) {
-    try {
-      if (!twilioClient) {
-        console.log(`WhatsApp not sent (Twilio not configured): ${message}`);
-        return { success: false, message: "WhatsApp service not configured" };
-      }
-
-      const whatsapp = await twilioClient.messages.create({
-        body: message,
-        from: `whatsapp:${process.env.TWILIO_WHATSAPP_NUMBER}`,
-        to: `whatsapp:+91${mobile}`,
-      });
-
-      const user = await User.findOne({ mobile });
-      if (user) {
-        await this.logNotification(
-          user._id,
-          "WHATSAPP",
-          "WhatsApp Notification",
-          message,
-          {
-            mobile,
-            sid: whatsapp.sid,
-          },
-        );
-      }
-
-      return {
-        success: true,
-        sid: whatsapp.sid,
-        message: "WhatsApp sent successfully",
-      };
-    } catch (error) {
-      console.error("Error sending WhatsApp:", error);
-      throw new Error("Failed to send WhatsApp message");
-    }
-  }
-
-  // Send bulk notifications
-  static async sendBulkNotifications(
-    userIds,
+/**
+ * THE MASTER TRIGGER: Use this in your controllers!
+ * channels: ['PUSH', 'SMS', 'EMAIL']
+ */
+export const triggerNotification = async (recipientId, userModel, options) => {
+  const {
     title,
     body,
-    type = "PUSH",
-    data = {},
-  ) {
-    try {
-      const results = {
-        total: userIds.length,
-        success: 0,
-        failed: 0,
-        details: [],
-      };
+    category,
+    targetScreen,
+    targetId,
+    channels = ["PUSH"],
+    payload = {},
+  } = options;
 
-      for (const userId of userIds) {
-        try {
-          let result;
-          const user = await User.findById(userId);
+  const navData = { category, targetScreen, targetId, payload };
 
-          switch (type) {
-            case "PUSH":
-              result = await this.sendPushNotification(
-                userId,
-                title,
-                body,
-                data,
-              );
-              break;
-            case "SMS":
-              result =
-                user && user.mobile
-                  ? await this.sendSMS(user.mobile, body)
-                  : { success: false, message: "Mobile not found" };
-              break;
-            case "EMAIL":
-              result =
-                user && user.email
-                  ? await this.sendEmail(user.email, title, body)
-                  : { success: false, message: "Email not found" };
-              break;
-            default:
-              result = { success: false, message: "Invalid notification type" };
-          }
+  const results = [];
 
-          results.details.push({
-            userId,
-            success: result.success,
-            message: result.message || "Sent",
-          });
-          result.success ? results.success++ : results.failed++;
-        } catch (error) {
-          results.details.push({
-            userId,
-            success: false,
-            message: error.message,
-          });
-          results.failed++;
-        }
-      }
-      return results;
-    } catch (error) {
-      console.error("Error in bulk notification:", error);
-      throw new Error("Failed to send bulk notifications");
-    }
+  if (channels.includes("PUSH")) {
+    results.push(
+      await sendPushNotification(recipientId, userModel, title, body, navData),
+    );
   }
 
-  // Log notification
-  static async logNotification(userId, type, title, content, metadata = {}) {
+  // You can add logic for SMS/Email here using the same pattern
+  return results;
+};
+
+/**
+ * Unified Register Token
+ */
+export const registerDeviceToken = async (
+  userId,
+  userModel,
+  token,
+  platform = "android",
+) => {
+  const Model = getModel(userModel);
+  const user = await Model.findById(userId);
+  if (!user) throw new Error("User not found");
+
+  const existingIndex = user.deviceTokens.findIndex((t) => t.token === token);
+  if (existingIndex !== -1) {
+    user.deviceTokens[existingIndex].platform = platform;
+    user.deviceTokens[existingIndex].lastUsed = new Date();
+  } else {
+    user.deviceTokens.push({ token, platform, lastUsed: new Date() });
+  }
+  await user.save();
+  return { success: true };
+};
+
+export const sendBulkNotifications1 = async (
+  userIds,
+  title,
+  body,
+  type = "PUSH",
+  data = {},
+) => {
+  const results = { total: userIds.length, success: 0, failed: 0, details: [] };
+
+  for (const userId of userIds) {
     try {
-      await NotificationLog.create({
+      const user = await User.findById(userId);
+      let result;
+      switch (type) {
+        case "PUSH":
+          result = await sendPushNotification(userId, title, body, data);
+          break;
+        case "SMS":
+          result =
+            user && user.mobile
+              ? await sendSMS(user.mobile, body)
+              : { success: false, message: "Mobile not found" };
+          break;
+        case "EMAIL":
+          result =
+            user && user.email
+              ? await sendEmail(user.email, title, body)
+              : { success: false, message: "Email not found" };
+          break;
+        default:
+          result = { success: false, message: "Invalid notification type" };
+      }
+      results.details.push({
         userId,
-        type,
-        title,
-        content,
-        metadata,
-        sentAt: new Date(),
+        success: result.success,
+        message: result.message || "Sent",
       });
+      result.success ? results.success++ : results.failed++;
     } catch (error) {
-      console.error("Error logging notification:", error);
+      results.details.push({ userId, success: false, message: error.message });
+      results.failed++;
     }
   }
+  return results;
+};
 
-  // Register device token
-  static async registerDeviceToken(userId, token, platform = "android") {
-    try {
-      const user = await User.findById(userId);
-      if (!user) throw new Error("User not found");
+/**
+ * Send notification to an array of users (Bulk)
+ * @param {Array} userIds - Array of ObjectIds
+ * @param {String} userModel - 'Admin', 'Staff', or 'User'
+ * @param {Object} options - Notification content and metadata
+ */
+export const sendBulkNotifications = async (userIds, userModel, options) => {
+  const results = {
+    total: userIds.length,
+    success: 0,
+    failed: 0,
+  };
 
-      const existingTokenIndex = user.deviceTokens.findIndex(
-        (t) => t.token === token,
-      );
+  // We use Promise.all to trigger all notifications in parallel for speed
+  const notifications = userIds.map((id) =>
+    triggerNotification(id, userModel, options),
+  );
 
-      if (existingTokenIndex !== -1) {
-        user.deviceTokens[existingTokenIndex].platform = platform;
-        user.deviceTokens[existingTokenIndex].lastActive = new Date();
-      } else {
-        user.deviceTokens.push({ token, platform, lastActive: new Date() });
-      }
+  const responses = await Promise.all(notifications);
 
-      await user.save();
-      return { success: true, message: "Token registered" };
-    } catch (error) {
-      throw new Error("Failed to register device token");
-    }
-  }
+  responses.forEach((res) => {
+    // Since triggerNotification returns an array of channel results
+    const isSuccess = res.some((r) => r.success === true);
+    if (isSuccess) results.success++;
+    else results.failed++;
+  });
 
-  // Unregister device token
-  static async unregisterDeviceToken(userId, token) {
-    try {
-      const user = await User.findById(userId);
-      if (!user) throw new Error("User not found");
-
-      user.deviceTokens = user.deviceTokens.filter((t) => t.token !== token);
-      await user.save();
-
-      return { success: true, message: "Token unregistered" };
-    } catch (error) {
-      throw new Error("Failed to unregister device token");
-    }
-  }
-}
-
-export default NotificationService;
+  return results;
+};

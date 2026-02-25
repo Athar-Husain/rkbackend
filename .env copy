@@ -1,0 +1,94 @@
+# Server
+PORT=5000
+NODE_ENV=development
+
+APP_URL=https://yourdomain.com
+APP_DOWNLOAD_URL=https://yourdomain.com/download
+
+# MongoDB
+# MONGODB_URI=mongodb://localhost:27017/rk_electronics
+MONGO_URI="mongodb://127.0.0.1:27017/rkelectronics1"
+# MONGO_URI="mongodb://127.0.0.1:27017/rkelectronics"
+MONGODB_TEST_URI='mongodb://localhost:27017/rkelectronics_test'
+
+# JWT
+# JWT_SECRET=yhidhiuwdwdwgiugiug
+# JWT_SECRET=your_super_secret_jwt_key_change_in_production
+# JWT_EXPIRE=7d
+
+
+JWT_SECRET=1c9d8f2e4a0b7e6c3f9a5d8b2e7c6a4f1d9b8e3c0a7f5e6d4c9a2b8
+JWT_REFRESH_SECRET=8f2a7c9e4d1b6e5f0a3c9b7e6d2f4a1c8e9b5d0a6f3c7e
+JWT_TEMP_SECRET=5e9f1c0a6b8d4f7e2a3c9d8b6e7f5a1c0e4
+JWT_RESET_SECRET=0f8d6e7a5b9c3e2f4a1d8c6e9b7f5a0
+JWT_EXPIRY=7d
+
+# OTP Settings
+OTP_EXPIRY_MINUTES=10
+MAX_DAILY_OTP=10
+MAX_HOURLY_OTP=5
+
+
+# Email Service
+SMTP_HOST=smtp.gmail.com
+SMTP_PORT=587
+SMTP_SECURE=false
+SMTP_USER=your_email@gmail.com
+SMTP_PASS=your_app_password
+EMAIL_FROM="RK Electronics <noreply@rkelectronics.com>"
+
+
+# SMS Service
+SMS_PROVIDER=test
+TWILIO_SID=your_twilio_sid
+TWILIO_AUTH_TOKEN=your_twilio_auth_token
+TWILIO_NUMBER=+1234567890
+
+FIREBASE_ADMIN_KEY=
+
+
+FCM_PROJECT_ID="rkelectronics-e51b9"
+FCM_CLIENT_EMAIL="firebase-adminsdk-fbsvc@rkelectronics-e51b9.iam.gserviceaccount.com",
+FCM_PRIVATE_KEY="-----BEGIN PRIVATE KEY-----\nMIIEvgIBADANBgkqhkiG9w0BAQEFAASCBKgwggSkAgEAAoIBAQC7gVkN/TC60ZCq\ngkDPAHSWzlIAPrLgp6tsoXSiThMN1PP2f3rrrdWq+OOtJ4lpe0bm83U2+VwaIZgb\nPVg4MfHAPwYQgGbNB0k191Ke4K8Y/qTrsdc17vNWZj8EMsE15kKfOkU1nEmqe3gz\n9Jbm/8i4IlM2GaS8r3eVGiIxGuqBGtKleN5cDq47kihWMj9LL5xKK7/Xe3SZBopb\n68At7FYTSDrwGuUVuAjrh7o/D+vw0t756HQ/od86t4R43KG5K/bR1MBL2ncWItvB\na4WmE2tH4rsUkzHS0KWB8JdzsJkYPDq8ueCVvTMeMfozHAwXqKk06L6MydRl6Adk\nckmPBEzFAgMBAAECggEAF9pHiukHluxr29UAC5VCP6D1e4R+WufZfdM4NCF8eQj7\nFAN5jpupj7tjszZRW7LL/TtBUQH9vnFBmU1/eH6aA1vBGL5M1Y40uQHCZ+WrQKG8\nNyODfh/sorQVFiKiw4mMNhdCkKRWFrLoQqu9upsVXJ85OKugckRcEQKnENoctNmN\nf/mWE06MHxRjOWz6tb5zBwdSaxd26nr4PssriApiJeuBOAkLNvoc5CtDfI8X0Lqe\nLeCUZRiNWPlCpcqL7Oriqf1yKO9YAbpG6rJir33WEDcWGdhPfO7g6xwf6HMiABma\nWcVE7wbT047LlerQMFpNnxEiqojElVhNlUkTmjaEDQKBgQD4Fx9fpmI2dPeoFz9W\nZ9a1j0N5Zb82GddrcbXGREFWtGjMwBeXTTbXVqQxPC33EYs4viHEBpUJ3QXO1egf\nW/W209bZXGOd64k9k5M+Y4tNFI9+1WcQOBIx0gkJ6slC6rZgYIqGM2l6M322+AqZ\nOHofgNsAjJHSnQe9PTvnq5+/rwKBgQDBe70izvTsCsGcl/3ObXXNmPdG5GWe8pUi\n2kLspB7RDk9CWlGBbk9E20tFtUUBEXDkF4ToHl4pTSfJn/h6pHzLrgda5vFuLsxT\nQYyTO0TajXGvvGlZi1Fq76ZcyTOovYxpCqvBDrh5jrgYtgkQBcPFsURQ2XQwJeO7\nIo401TvDywKBgEF4YKguUXbLkVvDnsxfpNLPFuBfkIFnemj5Xh4Pfyqxe4KlItSj\n5NgZHkV7+ylbcOEtk92WWxh6QoEeBB7adtKjvuwnrIZNVS9x1Ya+YFGcHm47RPKL\nyYlqQ0ZhtnE5XZ27fHMD+E7ubbuuY6WhuOC9cY4IiqcJF7TCByARM5wzAoGBAKu7\n4wLUYzxnx7Xwio0BR0C39zPrYe+VLZ6D0Ecu3VN9uggRFqsleCKL6uHypU7vZh5u\nab+FxNov65Lg9LIW8dXvoAOlXMIJs75qPhYo01KRnUj4mSGrsRaTpDxTMhEiPVC2\n8gAnysHKVclJOf4Iv93nG9YPTTu3Rc1CPKrUYXnFAoGBAOEpCUdncKFUA3HhnFvG\nyieoVEGMfVlIUg62EMS3Vnc2yDtU2IW5BCQBcNzVaDWW8xV6FTLrEuSMtV4Z2Q1J\nQ1nHACNPah9vI8g7EvbN9kVp/qXpbh1BFnA/0a1HwqFZ4FHo5p75tN5BIm613cTr\nRqcvsXEBYXLedk2R1ruv98D2\n-----END PRIVATE KEY-----\n"
+
+CORS_ORIGIN=https://yourapp.com,https://admin.yourapp.com
+
+
+# OTP
+TWILIO_ACCOUNT_SID="AChoihoihao"
+# TWILIO_AUTH_TOKEN="ucigia787g"
+TWILIO_PHONE_NUMBER="+917899899898"
+OTP_EXPIRE_MINUTES='10'
+
+
+
+# Firebase (Push Notifications)
+FIREBASE_SERVICE_ACCOUNT_KEY_PATH="./firebase-service-account.json"
+# FIREBASE_SERVICE_ACCOUNT_KEY_PATH="firebase-service-account.json"
+
+# Redis (Caching)
+REDIS_HOST=localhost
+REDIS_PORT=6379
+
+# AWS S3 (File Storage)
+AWS_ACCESS_KEY_ID="your_aws_key"
+AWS_SECRET_ACCESS_KEY="your_aws_secret"
+AWS_REGION="ap-south-1"
+AWS_BUCKET_NAME="rk-electronics-bucket"
+
+# Admin Credentials
+ADMIN_EMAIL=admin@rkelectronics.com
+ADMIN_PASSWORD=admin123
+
+# App URLs
+FRONTEND_URL=http://localhost:5173
+# FRONTEND_URL=http://localhost:3000
+MOBILE_APP_URL=exp://localhost:19000
+
+# Logging
+LOG_LEVEL=info
+LOG_DIR=logs
+
+# Rate Limiting
+RATE_LIMIT_WINDOW_MS=900000
+RATE_LIMIT_MAX=100

@@ -49,8 +49,18 @@ const couponSchema = new mongoose.Schema(
       },
 
       geographic: {
-        cities: [String],
-        areas: [String],
+        cities: [
+          {
+            type: mongoose.Schema.Types.ObjectId,
+            ref: "CityArea",
+          },
+        ],
+        areas: [
+          {
+            type: mongoose.Schema.Types.ObjectId,
+            // Note: No ref here because Areas are sub-documents in CityArea
+          },
+        ],
         stores: [
           {
             type: mongoose.Schema.Types.ObjectId,
@@ -58,6 +68,16 @@ const couponSchema = new mongoose.Schema(
           },
         ],
       },
+      // geographic: {
+      //   cities: [String],
+      //   areas: [String],
+      //   stores: [
+      //     {
+      //       type: mongoose.Schema.Types.ObjectId,
+      //       ref: "Store",
+      //     },
+      //   ],
+      // },
 
       users: [
         {

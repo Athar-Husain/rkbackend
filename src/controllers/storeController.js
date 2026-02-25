@@ -2,7 +2,7 @@
 
 import Store from "../models/Store.model.js";
 
-export const createStore = async (req, res, next) => {
+export const createStore1 = async (req, res, next) => {
   try {
     const store = await Store.create(req.body);
 
@@ -16,103 +16,42 @@ export const createStore = async (req, res, next) => {
   }
 };
 
-export const getAllStoresAdmin = async (req, res, next) => {
+export const createStore = async (req, res, next) => {
   try {
-    const stores = await Store.find().sort({ createdAt: -1 });
-
-    res.status(200).json({
-      success: true,
-      count: stores.length,
-      stores,
+    // Check if store with same name in same area already exists to prevent duplicates
+    const existingStore = await Store.findOne({
+      name: req.body.name,
+      "location.area": req.body.location?.area
+        ?.trim()
+        .toUpperCase()
+        .replace(/\s+/g, "-"),
     });
-  } catch (error) {
-    next(error);
-  }
-};
 
-export const getStoreByIdAdmin = async (req, res, next) => {
-  try {
-    const store = await Store.findById(req.params.id);
-
-    if (!store) {
-      return res.status(404).json({
+    if (existingStore) {
+      return res.status(400).json({
         success: false,
-        message: "Store not found",
+        message: "A store with this name already exists in this area.",
       });
     }
 
-    res.status(200).json({
+    const store = await Store.create(req.body);
+
+    res.status(201).json({
       success: true,
+      message: "Store registered successfully",
       store,
     });
   } catch (error) {
-    next(error);
-  }
-};
-
-export const updateStore = async (req, res, next) => {
-  try {
-    const store = await Store.findByIdAndUpdate(req.params.id, req.body, {
-      new: true,
-      runValidators: true,
-    });
-
-    if (!store) {
-      return res.status(404).json({
-        success: false,
-        message: "Store not found",
-      });
+    if (error.code === 11000) {
+      return res
+        .status(400)
+        .json({ success: false, message: "Store Code must be unique" });
     }
-
-    res.status(200).json({
-      success: true,
-      message: "Store updated successfully",
-      store,
-    });
-  } catch (error) {
     next(error);
   }
 };
 
-export const toggleStoreStatus = async (req, res, next) => {
-  try {
-    const store = await Store.findById(req.params.id);
-
-    if (!store) {
-      return res.status(404).json({
-        success: false,
-        message: "Store not found",
-      });
-    }
-
-    store.isActive = !store.isActive;
-    await store.save();
-
-    res.status(200).json({
-      success: true,
-      message: `Store ${store.isActive ? "activated" : "deactivated"}`,
-      isActive: store.isActive,
-    });
-  } catch (error) {
-    next(error);
-  }
-};
-
-export const getAreasByCity = async (req, res) => {
-  try {
-    const areas = await Store.find({
-      "location.city": req.params.city.toUpperCase(),
-    }).distinct("location.area");
-
-    res.status(200).json({ success: true, data: areas });
-  } catch (error) {
-    res.status(500).json({ success: false, message: error.message });
-  }
-};
-// @desc    Get all stores
-// @route   GET /api/stores
-// @access  Public
-export const getStores = async (req, res, next) => {
+export const getStores2 = async (req, res, next) => {
   try {
     const { city, area, type, page = 1, limit = 20 } = req.query;
 
@@ -178,11 +117,173 @@ export const getStores = async (req, res, next) => {
   }
 };
 
+export const getStores = async (req, res, next) => {
+  try {
+    const { city, area, type } = req.query;
+    const query = { isActive: true };
+
+    // Format inputs to match Schema's pre-save logic for accurate matching
+    if (city) {
+      query["location.city"] = city.trim().toUpperCase();
+    }
+
+    if (area) {
+      // Matches the "JAGRUTI-NAGAR" format
+      query["location.area"] = area.trim().toUpperCase().replace(/\s+/g, "-");
+    }
+
+    if (type) {
+      query.type = type.toUpperCase();
+    }
+
+    const stores = await Store.find(query).sort({
+      "location.city": 1,
+      name: 1,
+    });
+
+    res.status(200).json({
+      success: true,
+      count: stores.length,
+      stores,
+      // Aggregating available filters for the frontend dropdowns
+      filters: {
+        cities: await Store.distinct("location.city", { isActive: true }),
+        types: ["MAIN", "BRANCH", "SUB_BRANCH"],
+      },
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+export const updateStore1 = async (req, res, next) => {
+  try {
+    const store = await Store.findByIdAndUpdate(req.params.id, req.body, {
+      new: true,
+      runValidators: true,
+    });
+
+    if (!store) {
+      return res.status(404).json({
+        success: false,
+        message: "Store not found",
+      });
+    }
+
+    res.status(200).json({
+      success: true,
+      message: "Store updated successfully",
+      store,
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+export const updateStore = async (req, res, next) => {
+  try {
+    let store = await Store.findById(req.params.id);
+
+    if (!store) {
+      return res
+        .status(404)
+        .json({ success: false, message: "Store not found" });
+    }
+
+    // Update fields manually to trigger the 'pre-save' hook logic
+    Object.assign(store, req.body);
+
+    // This triggers the pre-save hook in your schema
+    await store.save();
+
+    res.status(200).json({
+      success: true,
+      message: "Store details synchronized successfully",
+      store,
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+export const getAllStoresAdmin = async (req, res, next) => {
+  try {
+    const stores = await Store.find().sort({ createdAt: -1 });
+
+    res.status(200).json({
+      success: true,
+      count: stores.length,
+      stores,
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+export const getStoreByIdAdmin = async (req, res, next) => {
+  try {
+    const store = await Store.findById(req.params.id);
+
+    if (!store) {
+      return res.status(404).json({
+        success: false,
+        message: "Store not found",
+      });
+    }
+
+    res.status(200).json({
+      success: true,
+      store,
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+export const toggleStoreStatus = async (req, res, next) => {
+  try {
+    const store = await Store.findById(req.params.id);
+
+    if (!store) {
+      return res.status(404).json({
+        success: false,
+        message: "Store not found",
+      });
+    }
+
+    store.isActive = !store.isActive;
+    await store.save();
+
+    res.status(200).json({
+      success: true,
+      message: `Store ${store.isActive ? "activated" : "deactivated"}`,
+      isActive: store.isActive,
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+export const getAreasByCity = async (req, res) => {
+  try {
+    const areas = await Store.find({
+      "location.city": req.params.city.toUpperCase(),
+    }).distinct("location.area");
+
+    res.status(200).json({ success: true, data: areas });
+  } catch (error) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+};
+// @desc    Get all stores
+// @route   GET /api/stores
+// @access  Public
+
 export const getStores1 = async (req, res) => {
   try {
     const { city } = req.query;
     const filter = city ? { "location.city": city.toUpperCase() } : {};
-    
+
     const stores = await Store.find(filter).sort({ "location.area": 1 });
     res.status(200).json({ success: true, count: stores.length, data: stores });
   } catch (error) {

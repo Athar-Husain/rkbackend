@@ -1,14 +1,22 @@
-const express = require("express");
+import express from "express";
 const router = express.Router();
-const analyticsController = require("../controllers/analyticsController");
-const { adminProtect } = require("../middleware/auth");
+
+import { adminProtect } from "../middleware/auth.js";
+import {
+  getSalesAnalytics,
+  getUserAnalytics,
+  getCouponAnalytics,
+  getStoreAnalytics,
+} from "../controllers/analyticsController.js";
 
 // All routes require admin authentication
 router.use(adminProtect);
 
-router.get("/sales", analyticsController.getSalesAnalytics);
-router.get("/users", analyticsController.getUserAnalytics);
-router.get("/coupons", analyticsController.getCouponAnalytics);
-router.get("/stores", analyticsController.getStoreAnalytics);
+router.get("/sales", getSalesAnalytics);
+// router.get("/sales", analyticsController.getSalesAnalytics);
+router.get("/users", getUserAnalytics);
+router.get("/coupons", getCouponAnalytics);
+router.get("/stores", getStoreAnalytics);
 
-module.exports = router;
+// ES6 Default Export
+export default router;

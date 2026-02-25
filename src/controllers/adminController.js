@@ -1,5 +1,4 @@
 import fs from "fs";
-
 import User from "../models/User.model.js";
 import Coupon from "../models/Coupon.model.js";
 import Product from "../models/Product.model.js";
@@ -8,7 +7,7 @@ import Purchase from "../models/Purchase.model.js";
 import UserCoupon from "../models/UserCoupon.model.js";
 
 // import TargetingService from "../services/targetingService.js";
-import NotificationService from "../services/notificationService.js";
+// import NotificationService from "../services/notificationService.js";
 
 import {
   exportUsersToExcel,
@@ -26,6 +25,7 @@ import jwt from "jsonwebtoken";
 import { generateOTP } from "../utils/common.js";
 import { generateToken } from "../middleware/auth.js";
 import Admin from "../models/Admin.js";
+import { sendBulkNotifications } from "../services/notificationService.js";
 
 const JWT_SECRET = process.env.JWT_SECRET;
 const OTP_EXPIRY_MINUTES = 10;
@@ -378,7 +378,7 @@ export const sendNotification = async (req, res, next) => {
 
     const users = await User.find(query).select("_id");
 
-    const result = await NotificationService.sendBulkNotifications(
+    const result = await sendBulkNotifications(
       users.map((u) => u._id),
       title,
       body,
