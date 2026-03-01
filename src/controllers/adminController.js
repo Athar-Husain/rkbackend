@@ -1,10 +1,18 @@
 import fs from "fs";
+import mongoose from "mongoose";
 import User from "../models/User.model.js";
 import Coupon from "../models/Coupon.model.js";
 import Product from "../models/Product.model.js";
 import Store from "../models/Store.model.js";
 import Purchase from "../models/Purchase.model.js";
 import UserCoupon from "../models/UserCoupon.model.js";
+import Referral from "../models/Referral.model.js";
+
+// import Purchase from "../../models/purchase.model.js";
+// import User from "../../models/user.model.js";
+// import Store from "../../models/store.model.js";
+// import Coupon from "../../models/coupon.model.js";
+// import UserCoupon from "../../models/userCoupon.model.js";
 
 // import TargetingService from "../services/targetingService.js";
 // import NotificationService from "../services/notificationService.js";
@@ -200,146 +208,202 @@ export const getDashboard = async (req, res, next) => {
   }
 };
 
-/**
- * @desc    Create coupon
- */
-export const createCoupon = async (req, res, next) => {
+export const getAdminDashboard = async (req, res, next) => {
   try {
-    const data = req.body;
+    const { startDate, endDate, storeId } = req.query;
 
-    const exists = await Coupon.findOne({
-      code: data.code.toUpperCase(),
-    });
-
-    if (exists) {
-      return res.status(400).json({
-        success: false,
-        error: "Coupon code already exists",
-      });
+    const match = {};
+    if (startDate && endDate) {
+      match.createdAt = {
+        $gte: new Date(startDate),
+        $lte: new Date(endDate),
+      };
     }
 
-    const coupon = await Coupon.create({
-      ...data,
-      code: data.code.toUpperCase(),
-      status: "ACTIVE",
-      createdBy: req.admin?._id || null,
-    });
-
-    let assignment = null;
-    if (
-      coupon.targeting.type !== "INDIVIDUAL" ||
-      coupon.targeting.users?.length
-    ) {
-      assignment = await assignCouponToEligibleUsers(coupon._id);
+    if (storeId) {
+      match.storeId = new mongoose.Types.ObjectId(storeId);
     }
 
-    res.status(201).json({
-      success: true,
-      coupon,
-      assignment,
-      message: "Coupon created successfully",
-    });
-  } catch (err) {
-    next(err);
-  }
-};
-
-/**
- * @desc Update coupon
- */
-export const updateCoupon = async (req, res, next) => {
-  try {
-    const coupon = await Coupon.findById(req.params.id);
-    if (!coupon) {
-      return res
-        .status(404)
-        .json({ success: false, error: "Coupon not found" });
-    }
-
-    Object.keys(req.body).forEach((key) => {
-      coupon[key] = req.body[key] ?? coupon[key];
-    });
-
-    await coupon.save();
-
-    res.json({
-      success: true,
-      coupon,
-      message: "Coupon updated successfully",
-    });
-  } catch (err) {
-    next(err);
-  }
-};
-
-/**
- * @desc Get users
- */
-export const getUsers = async (req, res, next) => {
-  try {
-    const {
-      city,
-      area,
-      search,
-      page = 1,
-      limit = 50,
-      sortBy = "createdAt",
-      sortOrder = "desc",
-      hasPurchases,
-    } = req.query;
-
-    const query = {};
-
-    if (city) query.city = new RegExp(city, "i");
-    if (area) query.area = new RegExp(area, "i");
-
-    if (search) {
-      query.$or = [
-        { name: new RegExp(search, "i") },
-        { mobile: new RegExp(search, "i") },
-        { email: new RegExp(search, "i") },
-      ];
-    }
-
-    if (hasPurchases === "true") {
-      const users = await Purchase.distinct("userId");
-      query._id = { $in: users };
-    }
-
-    const users = await User.find(query)
-      .select("-password -deviceTokens")
-      .sort({ [sortBy]: sortOrder === "asc" ? 1 : -1 })
-      .skip((page - 1) * limit)
-      .limit(Number(limit));
-
-    const enriched = await Promise.all(
-      users.map(async (u) => ({
-        ...u.toObject(),
-        stats: {
-          purchaseCount: await Purchase.countDocuments({ userId: u._id }),
-          totalSpent:
-            (
-              await Purchase.aggregate([
-                { $match: { userId: u._id } },
-                { $group: { _id: null, total: { $sum: "$finalAmount" } } },
-              ])
-            )[0]?.total || 0,
-          activeCoupons: await UserCoupon.countDocuments({
-            userId: u._id,
-            status: "ACTIVE",
-          }),
+    // ===============================
+    // 1️⃣ Revenue KPIs
+    // ===============================
+    const revenueStats = await Purchase.aggregate([
+      { $match: match },
+      {
+        $group: {
+          _id: null,
+          totalRevenue: { $sum: "$finalAmount" },
+          totalOrders: { $sum: 1 },
+          totalDiscount: { $sum: "$discount" },
         },
-      })),
-    );
+      },
+      {
+        $project: {
+          _id: 0,
+          totalRevenue: 1,
+          totalOrders: 1,
+          totalDiscount: 1,
+          avgOrderValue: {
+            $cond: [
+              { $eq: ["$totalOrders", 0] },
+              0,
+              { $divide: ["$totalRevenue", "$totalOrders"] },
+            ],
+          },
+        },
+      },
+    ]);
 
-    const total = await User.countDocuments(query);
+    // ===============================
+    // 2️⃣ Revenue Trend (Monthly)
+    // ===============================
+    const revenueTrend = await Purchase.aggregate([
+      { $match: match },
+      {
+        $group: {
+          _id: {
+            year: { $year: "$createdAt" },
+            month: { $month: "$createdAt" },
+          },
+          revenue: { $sum: "$finalAmount" },
+        },
+      },
+      { $sort: { "_id.year": 1, "_id.month": 1 } },
+    ]);
 
-    res.json({
+    // ===============================
+    // 3️⃣ Top Stores
+    // ===============================
+    const topStores = await Purchase.aggregate([
+      { $match: match },
+      {
+        $group: {
+          _id: "$storeId",
+          revenue: { $sum: "$finalAmount" },
+          orders: { $sum: 1 },
+        },
+      },
+      { $sort: { revenue: -1 } },
+      { $limit: 5 },
+      {
+        $lookup: {
+          from: "stores",
+          localField: "_id",
+          foreignField: "_id",
+          as: "store",
+        },
+      },
+      { $unwind: "$store" },
+      {
+        $project: {
+          storeName: "$store.name",
+          revenue: 1,
+          orders: 1,
+        },
+      },
+    ]);
+
+    // ===============================
+    // 4️⃣ Customer Intelligence
+    // ===============================
+    const totalUsers = await User.countDocuments();
+    const activeUsers = await Purchase.distinct("userId", match);
+
+    const topCustomers = await Purchase.aggregate([
+      { $match: match },
+      {
+        $group: {
+          _id: "$userId",
+          totalSpend: { $sum: "$finalAmount" },
+        },
+      },
+      { $sort: { totalSpend: -1 } },
+      { $limit: 5 },
+      {
+        $lookup: {
+          from: "users",
+          localField: "_id",
+          foreignField: "_id",
+          as: "user",
+        },
+      },
+      { $unwind: "$user" },
+      {
+        $project: {
+          name: "$user.firstName",
+          totalSpend: 1,
+        },
+      },
+    ]);
+
+    // ===============================
+    // 5️⃣ Coupon Intelligence
+    // ===============================
+    const totalCoupons = await Coupon.countDocuments();
+    const activeCoupons = await Coupon.countDocuments({ status: "ACTIVE" });
+
+    const couponRedemption = await UserCoupon.aggregate([
+      {
+        $group: {
+          _id: "$couponId",
+          issued: { $sum: 1 },
+          redeemed: {
+            $sum: { $cond: [{ $eq: ["$status", "REDEEMED"] }, 1, 0] },
+          },
+        },
+      },
+      {
+        $project: {
+          redemptionRate: {
+            $cond: [
+              { $eq: ["$issued", 0] },
+              0,
+              { $multiply: [{ $divide: ["$redeemed", "$issued"] }, 100] },
+            ],
+          },
+        },
+      },
+      { $sort: { redemptionRate: -1 } },
+      { $limit: 5 },
+    ]);
+
+    // ===============================
+    // 6️⃣ Referral Intelligence
+    // ===============================
+    const referralStats = await Referral.aggregate([
+      {
+        $group: {
+          _id: "$status",
+          count: { $sum: 1 },
+        },
+      },
+    ]);
+
+    // ===============================
+    // 7️⃣ Live Activity
+    // ===============================
+    const recentPurchases = await Purchase.find(match)
+      .sort({ createdAt: -1 })
+      .limit(5)
+      .populate("userId", "firstName")
+      .populate("storeId", "name")
+      .lean();
+
+    return res.status(200).json({
       success: true,
-      users: enriched,
-      total,
-      pages: Math.ceil(total / limit),
-      currentPage: page,
+      data: {
+        revenueStats: revenueStats[0] || {},
+        revenueTrend,
+        topStores,
+        totalUsers,
+        activeUsers: activeUsers.length,
+        topCustomers,
+        totalCoupons,
+        activeCoupons,
+        couponRedemption,
+        referralStats,
+        recentPurchases,
+      },
     });
   } catch (err) {
     next(err);
@@ -683,3 +747,149 @@ export const changePassword = asyncHandler(async (req, res) => {
 export const logoutAdmin = asyncHandler(async (req, res) => {
   res.status(200).json({ message: "Logged out successfully" });
 });
+
+/**
+ * @desc    Create coupon
+ */
+export const createCoupon = async (req, res, next) => {
+  try {
+    const data = req.body;
+
+    const exists = await Coupon.findOne({
+      code: data.code.toUpperCase(),
+    });
+
+    if (exists) {
+      return res.status(400).json({
+        success: false,
+        error: "Coupon code already exists",
+      });
+    }
+
+    const coupon = await Coupon.create({
+      ...data,
+      code: data.code.toUpperCase(),
+      status: "ACTIVE",
+      createdBy: req.admin?._id || null,
+    });
+
+    let assignment = null;
+    if (
+      coupon.targeting.type !== "INDIVIDUAL" ||
+      coupon.targeting.users?.length
+    ) {
+      assignment = await assignCouponToEligibleUsers(coupon._id);
+    }
+
+    res.status(201).json({
+      success: true,
+      coupon,
+      assignment,
+      message: "Coupon created successfully",
+    });
+  } catch (err) {
+    next(err);
+  }
+};
+
+/**
+ * @desc Update coupon
+ */
+export const updateCoupon = async (req, res, next) => {
+  try {
+    const coupon = await Coupon.findById(req.params.id);
+    if (!coupon) {
+      return res
+        .status(404)
+        .json({ success: false, error: "Coupon not found" });
+    }
+
+    Object.keys(req.body).forEach((key) => {
+      coupon[key] = req.body[key] ?? coupon[key];
+    });
+
+    await coupon.save();
+
+    res.json({
+      success: true,
+      coupon,
+      message: "Coupon updated successfully",
+    });
+  } catch (err) {
+    next(err);
+  }
+};
+
+/**
+ * @desc Get users
+ */
+export const getUsers = async (req, res, next) => {
+  try {
+    const {
+      city,
+      area,
+      search,
+      page = 1,
+      limit = 50,
+      sortBy = "createdAt",
+      sortOrder = "desc",
+      hasPurchases,
+    } = req.query;
+
+    const query = {};
+
+    if (city) query.city = new RegExp(city, "i");
+    if (area) query.area = new RegExp(area, "i");
+
+    if (search) {
+      query.$or = [
+        { name: new RegExp(search, "i") },
+        { mobile: new RegExp(search, "i") },
+        { email: new RegExp(search, "i") },
+      ];
+    }
+
+    if (hasPurchases === "true") {
+      const users = await Purchase.distinct("userId");
+      query._id = { $in: users };
+    }
+
+    const users = await User.find(query)
+      .select("-password -deviceTokens")
+      .sort({ [sortBy]: sortOrder === "asc" ? 1 : -1 })
+      .skip((page - 1) * limit)
+      .limit(Number(limit));
+
+    const enriched = await Promise.all(
+      users.map(async (u) => ({
+        ...u.toObject(),
+        stats: {
+          purchaseCount: await Purchase.countDocuments({ userId: u._id }),
+          totalSpent:
+            (
+              await Purchase.aggregate([
+                { $match: { userId: u._id } },
+                { $group: { _id: null, total: { $sum: "$finalAmount" } } },
+              ])
+            )[0]?.total || 0,
+          activeCoupons: await UserCoupon.countDocuments({
+            userId: u._id,
+            status: "ACTIVE",
+          }),
+        },
+      })),
+    );
+
+    const total = await User.countDocuments(query);
+
+    res.json({
+      success: true,
+      users: enriched,
+      total,
+      pages: Math.ceil(total / limit),
+      currentPage: page,
+    });
+  } catch (err) {
+    next(err);
+  }
+};

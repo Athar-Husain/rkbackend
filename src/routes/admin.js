@@ -1,77 +1,88 @@
 import express from "express";
 import multer from "multer";
-
-// import adminController from "../controllers/adminController.js";
 import { adminProtect } from "../middleware/auth.js";
+
 import {
-  createCoupon,
-  exportUsers,
-  getCouponAnalytics,
+  // Auth
+  registerAdmin,
+  loginAdmin,
+  logoutAdmin,
+  forgotPassword,
+  verifyOtp,
+  changePassword,
+  getLoginStatus,
+  getUserProfile,
+  updateAdmin,
+
+  // Dashboard
   getDashboard,
-  getUsers,
-  importProducts,
-  sendNotification,
+  getAdminDashboard,
+
+  // Coupons
+  createCoupon,
   updateCoupon,
+  getCouponAnalytics,
+
+  // Users
+  getUsers,
+  exportUsers,
+
+  // Notifications
+  sendNotification,
+
+  // Products
+  importProducts,
 } from "../controllers/adminController.js";
 
 const router = express.Router();
 
-// Configure multer for file uploads
+/* ===============================
+   Multer Config
+================================= */
 const storage = multer.diskStorage({
-  destination: (req, file, cb) => {
-    cb(null, "uploads/");
-  },
-  filename: (req, file, cb) => {
-    cb(null, `${Date.now()}-${file.originalname}`);
-  },
+  destination: (req, file, cb) => cb(null, "uploads/"),
+  filename: (req, file, cb) => cb(null, `${Date.now()}-${file.originalname}`),
 });
 
 const upload = multer({ storage });
 
-import {
-  changePassword,
-  forgotPassword,
-  getLoginStatus,
-  getUserProfile,
-  loginAdmin,
-  logoutAdmin,
-  registerAdmin,
-  updateAdmin,
-  verifyOtp,
-} from "../controllers/adminController.js";
-// import { AdminProtect } from "../middleware/auth.js";
+/* ===============================
+   PUBLIC ROUTES
+================================= */
+router.post("/register", registerAdmin);
+router.post("/login", loginAdmin);
+router.post("/forgot-password", forgotPassword);
+router.post("/verify-otp", verifyOtp);
 
-// Public Routes
-router.post("/AdminRegister", registerAdmin);
-router.post("/AdminLogin", loginAdmin);
-router.post("/forgotPassword", forgotPassword);
-router.post("/verifyOtp", verifyOtp);
-
-// All routes require admin authentication
+/* ===============================
+   PROTECTED ROUTES
+================================= */
 router.use(adminProtect);
 
-router.get("/getAdminLoginStatus", getLoginStatus);
-router.get("/getAdmin", getUserProfile);
-router.put("/updateAdmin", updateAdmin);
-router.patch("/changePassword", changePassword);
-router.post("/AdminLogout", logoutAdmin);
+// Auth
+router.get("/login-status", getLoginStatus);
+router.get("/profile", getUserProfile);
+router.put("/profile", updateAdmin);
+router.patch("/change-password", changePassword);
+router.post("/logout", logoutAdmin);
 
 // Dashboard
 router.get("/dashboard", getDashboard);
+// (Remove duplicate getAdminDashboard if unnecessary)
 
-// Coupon management
-router.post("/coupon", createCoupon);
+// Coupons
+router.post("/coupons", createCoupon);
 router.put("/coupons/:id", updateCoupon);
 router.get("/coupons/analytics", getCouponAnalytics);
 
-// User management
+// Users
 router.get("/users", getUsers);
 router.get("/users/export", exportUsers);
 
 // Notifications
 router.post("/notifications", sendNotification);
 
-// Product management
+// Products
 router.post("/products/import", upload.single("file"), importProducts);
 
 export default router;

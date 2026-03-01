@@ -1,4 +1,3 @@
-// src/services/targetingService.js
 import mongoose from "mongoose";
 import User from "../models/User.model.js";
 import Coupon from "../models/Coupon.model.js";
@@ -9,7 +8,7 @@ import Referral from "../models/Referral.model.js";
 /* =====================================================
    PRODUCT RULE VALIDATION
 ===================================================== */
-export const validateProductRules2 = (coupon, purchaseItems = []) => {
+export const validateProductRules = (coupon, purchaseItems = []) => {
   if (!coupon?.productRules) return true;
   const {
     type,
@@ -32,42 +31,47 @@ export const validateProductRules2 = (coupon, purchaseItems = []) => {
   });
 };
 
-export const validateProductRules = (coupon, purchaseItems = []) => {
-  if (!coupon?.productRules) return true;
-
-  const {
-    type = "ALL_PRODUCTS",
-    categories = [],
-    brands = [],
-  } = coupon.productRules;
-
-  if (type === "ALL_PRODUCTS") return true;
-
-  if (!purchaseItems.length) return false;
-
-  return purchaseItems.some((item) => {
-    const itemCategory = item.category?.toUpperCase().trim();
-    const itemBrand = item.brand?.toUpperCase().trim();
-
-    switch (type) {
-      case "CATEGORY":
-        return categories.includes(itemCategory);
-
-      case "BRAND":
-        return brands.includes(itemBrand);
-
-      case "CATEGORY_BRAND":
-        return categories.includes(itemCategory) && brands.includes(itemBrand);
-
-      default:
-        return false;
-    }
-  });
-};
-
 /**
  * Geographic eligibility – no changes needed, already efficient.
  */
+export const checkGeographicEligibility2 = async (user, coupon) => {
+  const result = { eligible: true, reasons: [], conditions: {} };
+  const geo = coupon?.targeting?.geographic;
+  if (!geo) return result;
+
+  if (geo.cities?.length) {
+    const match = geo.cities.some((cityId) =>
+      cityId.equals
+        ? cityId.equals(user.city)
+        : cityId.toString() === user.city?.toString(),
+    );
+    if (!match) {
+      result.eligible = false;
+      result.reasons.push("Coupon not available in your city");
+    } else {
+      result.conditions.cities = geo.cities;
+    }
+  }
+
+  if (geo.areas?.length) {
+    const match = geo.areas.some((areaId) =>
+      areaId.equals
+        ? areaId.equals(user.area)
+        : areaId.toString() === user.area?.toString(),
+    );
+    if (!match) {
+      result.eligible = false;
+      result.reasons.push("Coupon not available in your area");
+    } else {
+      result.conditions.areas = geo.areas;
+    }
+  }
+
+  if (geo.stores?.length) {
+    result.conditions.stores = geo.stores;
+  }
+  return result;
+};
 
 export const checkGeographicEligibility = async (user, coupon) => {
   const result = { eligible: true, reasons: [], conditions: {} };
@@ -116,6 +120,110 @@ export const checkGeographicEligibility = async (user, coupon) => {
  * @param {Object} rules – from coupon.targeting.purchaseHistory
  * @param {Object} options – optionally pass pre‑fetched purchase stats (used in batch checks)
  */
+export const checkPurchaseHistoryEligibility2 = async (
+  userId,
+  rules,
+  preFetched = null,
+) => {
+  const result = { eligible: true, reasons: [], conditions: {} };
+  if (!rules) return result;
+
+  // If pre‑fetched aggregate data is provided, use it (batch mode)
+  if (preFetched) {
+    const { totalSpent, purchaseCount, categoriesBought } = preFetched;
+    if (rules.minPurchases > 0 && purchaseCount < rules.minPurchases) {
+      result.eligible = false;
+      result.reasons.push(`Minimum ${rules.minPurchases} purchase(s) required`);
+    }
+    if (rules.minTotalSpent > 0 && totalSpent < rules.minTotalSpent) {
+      result.eligible = false;
+      result.reasons.push(`Minimum spend of ₹${rules.minTotalSpent} required`);
+    }
+    if (rules.categories?.length) {
+      const hasCategory = rules.categories.some((cat) =>
+        categoriesBought.includes(cat),
+      );
+      if (!hasCategory) {
+        result.eligible = false;
+        result.reasons.push(
+          `Required purchase in categories: ${rules.categories.join(", ")}`,
+        );
+      } else {
+        result.conditions.categories = rules.categories;
+      }
+    }
+    result.conditions.minTotalSpent = rules.minTotalSpent;
+    result.conditions.currentTotalSpent = totalSpent;
+    return result;
+  }
+
+  // Single‑coupon check – perform aggregation on the fly
+  const matchStage = {
+    userId: new mongoose.Types.ObjectId(userId),
+    status: "COMPLETED",
+  };
+  if (rules.timeFrame && rules.timeFrame !== "ALL_TIME") {
+    const days =
+      { LAST_7_DAYS: 7, LAST_30_DAYS: 30, LAST_90_DAYS: 90 }[rules.timeFrame] ||
+      3650;
+    matchStage.createdAt = { $gte: new Date(Date.now() - days * 86400000) };
+  }
+
+  const pipeline = [
+    { $match: matchStage },
+    {
+      $facet: {
+        totalStats: [
+          {
+            $group: {
+              _id: null,
+              totalSpent: { $sum: "$finalAmount" },
+              purchaseCount: { $sum: 1 },
+            },
+          },
+        ],
+        categories: [
+          { $unwind: "$items" },
+          {
+            $group: { _id: null, categories: { $addToSet: "$items.category" } },
+          },
+        ],
+      },
+    },
+  ];
+
+  const [stats] = await Purchase.aggregate(pipeline);
+  const totalSpent = stats.totalStats[0]?.totalSpent || 0;
+  const purchaseCount = stats.totalStats[0]?.purchaseCount || 0;
+  const categoriesBought = stats.categories[0]?.categories || [];
+
+  if (rules.minPurchases > 0 && purchaseCount < rules.minPurchases) {
+    result.eligible = false;
+    result.reasons.push(`Minimum ${rules.minPurchases} purchase(s) required`);
+  }
+  if (rules.minTotalSpent > 0 && totalSpent < rules.minTotalSpent) {
+    result.eligible = false;
+    result.reasons.push(`Minimum spend of ₹${rules.minTotalSpent} required`);
+  }
+  if (rules.categories?.length) {
+    const hasCategory = rules.categories.some((cat) =>
+      categoriesBought.includes(cat),
+    );
+    if (!hasCategory) {
+      result.eligible = false;
+      result.reasons.push(
+        `Required purchase in categories: ${rules.categories.join(", ")}`,
+      );
+    } else {
+      result.conditions.categories = rules.categories;
+    }
+  }
+
+  result.conditions.minTotalSpent = rules.minTotalSpent;
+  result.conditions.currentTotalSpent = totalSpent;
+  return result;
+};
+
 export const checkPurchaseHistoryEligibility = async (user, coupon) => {
   const result = { eligible: true, reasons: [], conditions: {} };
   const rules = coupon.targeting?.purchaseHistory;
@@ -285,6 +393,108 @@ export const isUserEligibleForCoupon = async (user, coupon) => {
 /* =====================================================
    MAIN USER ELIGIBILITY CHECK
 ===================================================== */
+export const isUserEligibleForCoupon3 = async (
+  user,
+  coupon,
+  preFetched = {},
+) => {
+  const eligibility = {
+    eligible: true,
+    reasons: [],
+    conditions: {},
+  };
+
+  const now = new Date();
+
+  // ----- Basic static checks (fast, no DB) -----
+  if (coupon.status !== "ACTIVE") {
+    eligibility.eligible = false;
+    eligibility.reasons.push("Coupon is not active");
+  }
+  if (now < coupon.validFrom || now > coupon.validUntil) {
+    eligibility.eligible = false;
+    eligibility.reasons.push("Coupon is not valid at this time");
+  }
+  if (coupon.currentRedemptions >= coupon.maxRedemptions) {
+    eligibility.eligible = false;
+    eligibility.reasons.push("Coupon redemption limit reached");
+  }
+  if (!eligibility.eligible) return eligibility; // short‑circuit
+
+  // ----- Per‑user limit (pre‑fetched or query) -----
+  const usageCount =
+    preFetched.usageCount ??
+    (await UserCoupon.countDocuments({
+      userId: user._id,
+      couponId: coupon._id,
+      status: { $in: ["ACTIVE", "USED"] },
+    }));
+  if (usageCount >= coupon.perUserLimit) {
+    eligibility.eligible = false;
+    eligibility.reasons.push(
+      "You have reached the usage limit for this coupon",
+    );
+    return eligibility;
+  }
+
+  // ----- Targeting rules -----
+  const targetingType = coupon.targeting?.type;
+
+  switch (targetingType) {
+    case "GEOGRAPHIC": {
+      const geo = await checkGeographicEligibility(user, coupon);
+      if (!geo.eligible) {
+        eligibility.eligible = false;
+        eligibility.reasons.push(...geo.reasons);
+      }
+      eligibility.conditions.geographic = geo.conditions;
+      break;
+    }
+
+    case "INDIVIDUAL": {
+      const assignedUsers = coupon.targeting?.users || [];
+      const isAssigned = assignedUsers.some((u) => u.equals(user._id));
+      if (!isAssigned) {
+        eligibility.eligible = false;
+        eligibility.reasons.push("Coupon not assigned to you");
+      }
+      break;
+    }
+
+    case "PURCHASE_HISTORY": {
+      const purchaseCheck = await checkPurchaseHistoryEligibility(
+        user._id,
+        coupon.targeting.purchaseHistory,
+        preFetched.purchaseStats, // may be undefined → fallback to live aggregation
+      );
+      if (!purchaseCheck.eligible) {
+        eligibility.eligible = false;
+        eligibility.reasons.push(...purchaseCheck.reasons);
+      }
+      eligibility.conditions.purchaseHistory = purchaseCheck.conditions;
+      break;
+    }
+
+    case "REFERRAL": {
+      const referral = await Referral.findOne({
+        referredUserId: user._id,
+        status: "COMPLETED",
+      });
+      if (!referral) {
+        eligibility.eligible = false;
+        eligibility.reasons.push("No completed referrals found");
+      }
+      break;
+    }
+
+    case "ALL":
+    default:
+      // No extra conditions
+      break;
+  }
+
+  return eligibility;
+};
 
 export const getEligibleCouponsForUser = async (userId) => {
   const user = await User.findById(userId);
@@ -332,6 +542,99 @@ export const getEligibleCouponsForUser = async (userId) => {
       registrationDate: user.createdAt,
     },
   };
+};
+
+export const isUserEligibleForCoupon2 = async (user, coupon) => {
+  const eligibility = {
+    eligible: true,
+    reasons: [],
+    conditions: {},
+  };
+
+  const now = new Date();
+
+  // 1️⃣ Basic validations
+  if (coupon.status !== "ACTIVE") {
+    eligibility.eligible = false;
+    eligibility.reasons.push("Coupon is not active");
+  }
+
+  if (now < coupon.validFrom || now > coupon.validUntil) {
+    eligibility.eligible = false;
+    eligibility.reasons.push("Coupon is not valid at this time");
+  }
+
+  if (coupon.currentRedemptions >= coupon.maxRedemptions) {
+    eligibility.eligible = false;
+    eligibility.reasons.push("Coupon redemption limit reached");
+  }
+
+  // 2️⃣ Per-user limit check
+  const usedCount = await UserCoupon.countDocuments({
+    userId: user._id,
+    couponId: coupon._id,
+    status: { $in: ["ACTIVE", "USED"] },
+  });
+
+  if (usedCount >= coupon.perUserLimit) {
+    eligibility.eligible = false;
+    eligibility.reasons.push("You have already used this coupon");
+  }
+
+  // 3️⃣ Targeting rules
+  const targetingType = coupon?.targeting?.type;
+
+  switch (targetingType) {
+    case "GEOGRAPHIC": {
+      const geo = await checkGeographicEligibility(user, coupon);
+      if (!geo.eligible) {
+        eligibility.eligible = false;
+        eligibility.reasons.push(...geo.reasons);
+      }
+      eligibility.conditions.geographic = geo.conditions;
+      break;
+    }
+
+    case "INDIVIDUAL": {
+      const assignedUsers = coupon?.targeting?.users || [];
+      const isAssigned = assignedUsers.some((u) => u.equals(user._id));
+
+      if (!isAssigned) {
+        eligibility.eligible = false;
+        eligibility.reasons.push("Coupon not assigned to you");
+      }
+      break;
+    }
+
+    case "PURCHASE_HISTORY": {
+      const purchase = await checkPurchaseHistoryEligibility(user, coupon);
+      if (!purchase.eligible) {
+        eligibility.eligible = false;
+        eligibility.reasons.push(...purchase.reasons);
+      }
+      eligibility.conditions.purchaseHistory = purchase.conditions;
+      break;
+    }
+
+    case "REFERRAL": {
+      const referral = await Referral.findOne({
+        referredUserId: user._id,
+        status: "COMPLETED",
+      });
+
+      if (!referral) {
+        eligibility.eligible = false;
+        eligibility.reasons.push("No completed referrals found");
+      }
+      break;
+    }
+
+    case "ALL":
+    default:
+      break;
+  }
+
+  return eligibility;
 };
 
 export const assignCouponToEligibleUsers = async (couponId) => {
@@ -541,206 +844,4 @@ export const getDiscoverableCoupons = async (userId) => {
       registrationDate: user.createdAt,
     },
   };
-};
-
-export const buildTargetingConditions1 = ({
-  user = null,
-  product = null,
-  cartProducts = [],
-  category = null,
-  brand = null,
-}) => {
-  const conditions = [];
-
-  // ALL
-  conditions.push({ "targeting.type": "ALL" });
-
-  // INDIVIDUAL
-  if (user?._id) {
-    conditions.push({
-      $and: [
-        { "targeting.type": "INDIVIDUAL" },
-        { "targeting.users": user._id },
-      ],
-    });
-  }
-
-  // GEOGRAPHIC
-  if (user?.city || user?.area || user?.store) {
-    const geo = [];
-
-    if (user.city) geo.push({ "targeting.geographic.cities": user.city });
-    if (user.area) geo.push({ "targeting.geographic.areas": user.area });
-    if (user.store) geo.push({ "targeting.geographic.stores": user.store });
-
-    conditions.push({
-      $and: [{ "targeting.type": "GEOGRAPHIC" }, { $or: geo }],
-    });
-  }
-
-  // SEGMENT
-  if (user?.segments?.length) {
-    conditions.push({
-      $and: [
-        { "targeting.type": "SEGMENT" },
-        { "targeting.segments": { $in: user.segments } },
-      ],
-    });
-  }
-
-  // PRODUCT BASED
-  if (product) {
-    conditions.push({
-      $and: [
-        { "targeting.type": "PRODUCT_BASED" },
-        {
-          $or: [
-            { "targeting.products": product._id },
-            { "targeting.categories": product.category },
-            { "targeting.brands": product.brand },
-          ],
-        },
-      ],
-    });
-  }
-
-  // CART
-  if (cartProducts?.length) {
-    conditions.push({
-      $and: [
-        { "targeting.type": "PRODUCT_BASED" },
-        {
-          $or: [
-            { "targeting.products": { $in: cartProducts.map((p) => p._id) } },
-            {
-              "targeting.categories": {
-                $in: cartProducts.map((p) => p.category),
-              },
-            },
-            { "targeting.brands": { $in: cartProducts.map((p) => p.brand) } },
-          ],
-        },
-      ],
-    });
-  }
-
-  if (category) {
-    conditions.push({
-      $and: [
-        { "targeting.type": "PRODUCT_BASED" },
-        { "targeting.categories": category },
-      ],
-    });
-  }
-
-  if (brand) {
-    conditions.push({
-      $and: [
-        { "targeting.type": "PRODUCT_BASED" },
-        { "targeting.brands": brand },
-      ],
-    });
-  }
-
-  return conditions;
-};
-
-/**
- * Build targeting conditions for banners
- * Returns an array of MongoDB $or conditions
- *
- * @param {Object} options
- * @param {Object|null} options.user - logged-in user object
- * @param {Object|null} options.product - single product for product-specific banners
- * @param {Array} options.cartProducts - list of products in cart
- * @param {String|ObjectId|null} options.category - optional category filter
- * @param {String|ObjectId|null} options.brand - optional brand filter
- * @returns {Array} array of $or conditions
- */
-export const buildTargetingConditions = ({
-  user = null,
-  product = null,
-  cartProducts = [],
-  category = null,
-  brand = null,
-} = {}) => {
-  const conditions = [];
-
-  // ------------------------------------
-  // ALL users
-  // ------------------------------------
-  conditions.push({ "targeting.type": "ALL" });
-
-  // ------------------------------------
-  // INDIVIDUAL targeting
-  // ------------------------------------
-  if (user?._id) {
-    conditions.push({
-      $and: [
-        { "targeting.type": "INDIVIDUAL" },
-        { "targeting.users": user._id },
-      ],
-    });
-  }
-
-  // ------------------------------------
-  // GEOGRAPHIC targeting
-  // ------------------------------------
-  if (user?.city || user?.area || user?.store) {
-    const geoConditions = [];
-    if (user.city)
-      geoConditions.push({ "targeting.geographic.cities": user.city });
-    if (user.area)
-      geoConditions.push({ "targeting.geographic.areas": user.area });
-    if (user.store)
-      geoConditions.push({ "targeting.geographic.stores": user.store });
-
-    conditions.push({
-      $and: [{ "targeting.type": "GEOGRAPHIC" }, { $or: geoConditions }],
-    });
-  }
-
-  // ------------------------------------
-  // SEGMENT targeting
-  // ------------------------------------
-  if (user?.segments?.length) {
-    conditions.push({
-      $and: [
-        { "targeting.type": "SEGMENT" },
-        { "targeting.segments": { $in: user.segments } },
-      ],
-    });
-  }
-
-  // ------------------------------------
-  // PRODUCT-BASED targeting
-  // ------------------------------------
-  const productTargets = [];
-
-  if (product?._id) {
-    productTargets.push(
-      { "targeting.products": product._id },
-      { "targeting.categories": product.category },
-      { "targeting.brands": product.brand },
-    );
-  }
-
-  if (cartProducts?.length) {
-    productTargets.push(
-      { "targeting.products": { $in: cartProducts.map((p) => p._id) } },
-      { "targeting.categories": { $in: cartProducts.map((p) => p.category) } },
-      { "targeting.brands": { $in: cartProducts.map((p) => p.brand) } },
-    );
-  }
-
-  if (category) productTargets.push({ "targeting.categories": category });
-  if (brand) productTargets.push({ "targeting.brands": brand });
-
-  if (productTargets.length > 0) {
-    conditions.push({
-      $and: [{ "targeting.type": "PRODUCT_BASED" }, { $or: productTargets }],
-    });
-  }
-
-  return conditions;
 };

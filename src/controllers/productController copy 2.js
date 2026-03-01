@@ -267,6 +267,9 @@ export const addProduct2 = async (req, res, next) => {
   }
 };
 
+// import Product from "../models/Product.js";
+// import Store from "../models/Store.js";
+
 export const addProduct = async (req, res, next) => {
   try {
     const {
@@ -281,7 +284,6 @@ export const addProduct = async (req, res, next) => {
       images,
       specifications,
       mrp,
-      overallStock,
       sellingPrice,
       availableInStores = [],
       isFeatured = false,
@@ -290,7 +292,7 @@ export const addProduct = async (req, res, next) => {
       keywords,
     } = req.body;
 
-    // ------------------ Validation ------------------
+    // ------------------ Basic validation ------------------
     if (
       !sku ||
       !name ||
@@ -304,12 +306,14 @@ export const addProduct = async (req, res, next) => {
         .status(400)
         .json({ success: false, error: "Required fields are missing" });
     }
+
     if (sellingPrice > mrp) {
       return res
         .status(400)
         .json({ success: false, error: "Selling price cannot exceed MRP" });
     }
 
+    // ------------------ Check duplicate SKU ------------------
     const existingProduct = await Product.findOne({ sku: sku.toUpperCase() });
     if (existingProduct) {
       return res.status(409).json({
@@ -318,6 +322,7 @@ export const addProduct = async (req, res, next) => {
       });
     }
 
+    // ------------------ Validate stores ------------------
     if (availableInStores.length > 0) {
       const storeIds = availableInStores.map((s) => s.storeId);
       const validStores = await Store.find({ _id: { $in: storeIds } });
@@ -329,19 +334,26 @@ export const addProduct = async (req, res, next) => {
     }
 
     // ------------------ Normalize images ------------------
-    const formattedImages = (images || []).map((img, i) =>
-      typeof img === "string"
-        ? { url: img, alt: name, isPrimary: i === 0 }
-        : img,
-    );
+    let formattedImages = [];
+    if (Array.isArray(images)) {
+      formattedImages = images.map((img, index) => {
+        if (typeof img === "string")
+          return { url: img, alt: name, isPrimary: index === 0 };
+        return {
+          url: img.url,
+          alt: img.alt || name,
+          isPrimary: img.isPrimary || false,
+        };
+      });
+    }
 
+    // ------------------ Create product ------------------
     const product = await Product.create({
       sku: sku.toUpperCase(),
       name,
       category: category.toLowerCase(),
       subcategory,
       brand,
-      overallStock,
       model,
       description,
       highlights,
@@ -479,17 +491,15 @@ export const updateProduct1 = async (req, res, next) => {
 
 export const updateProduct = async (req, res, next) => {
   try {
-    const { id, ...updateFields } = req.body;
+    const { id } = req.body;
+    const updateFields = { ...req.body };
 
-    if (!id)
-      return res
-        .status(400)
-        .json({ success: false, error: "Product ID is required" });
-
+    // ------------------ Uppercase & lowercase ------------------
     if (updateFields.sku) updateFields.sku = updateFields.sku.toUpperCase();
     if (updateFields.category)
       updateFields.category = updateFields.category.toLowerCase();
 
+    // ------------------ Validate stores ------------------
     if (
       updateFields.availableInStores &&
       updateFields.availableInStores.length > 0
@@ -503,18 +513,24 @@ export const updateProduct = async (req, res, next) => {
       }
     }
 
+    // ------------------ Normalize images ------------------
     if (updateFields.images && Array.isArray(updateFields.images)) {
-      updateFields.images = updateFields.images.map((img, i) =>
-        typeof img === "string"
-          ? {
-              url: img,
-              alt: updateFields.name || "Product",
-              isPrimary: i === 0,
-            }
-          : img,
-      );
+      updateFields.images = updateFields.images.map((img, index) => {
+        if (typeof img === "string")
+          return {
+            url: img,
+            alt: updateFields.name || "Product",
+            isPrimary: index === 0,
+          };
+        return {
+          url: img.url,
+          alt: img.alt || updateFields.name || "Product",
+          isPrimary: img.isPrimary || false,
+        };
+      });
     }
 
+    // ------------------ Find & update product ------------------
     const product = await Product.findById(id);
     if (!product)
       return res

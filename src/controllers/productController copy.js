@@ -1,5 +1,163 @@
+// const Product = require("../models/Product.model.js");
+// const Store = require("../models/Store.model.js");
+
 import Product from "../models/Product.model.js";
 import Store from "../models/Store.model.js";
+
+// @desc    Get all products with filters
+// @route   GET /api/products
+// @access  Public
+export const getProductsold = async (req, res, next) => {
+  try {
+    const {
+      category,
+      brand,
+      minPrice,
+      maxPrice,
+      search,
+      sortBy = "createdAt",
+      sortOrder = "desc",
+      page = 1,
+      limit = 20,
+      inStock = false,
+      featured = false,
+      bestSeller = false,
+      newArrival = false,
+    } = req.query;
+
+    // Build query
+    const query = { isActive: true };
+
+    if (category) {
+      query.category = category.toUpperCase();
+    }
+
+    if (brand) {
+      query.brand = new RegExp(brand, "i");
+    }
+
+    if (minPrice || maxPrice) {
+      query.sellingPrice = {};
+      if (minPrice) query.sellingPrice.$gte = parseFloat(minPrice);
+      if (maxPrice) query.sellingPrice.$lte = parseFloat(maxPrice);
+    }
+
+    if (inStock === "true") {
+      query.overallStock = { $gt: 0 };
+    }
+
+    if (featured === "true") {
+      query.isFeatured = true;
+    }
+
+    if (bestSeller === "true") {
+      query.isBestSeller = true;
+    }
+
+    if (newArrival === "true") {
+      query.isNewArrival = true;
+    }
+
+    if (search) {
+      query.$or = [
+        { name: new RegExp(search, "i") },
+        { brand: new RegExp(search, "i") },
+        { model: new RegExp(search, "i") },
+        { category: new RegExp(search, "i") },
+        { description: new RegExp(search, "i") },
+      ];
+    }
+
+    // Sort options
+    const sort = {};
+    if (sortBy === "price") {
+      sort.sellingPrice = sortOrder === "asc" ? 1 : -1;
+    } else if (sortBy === "discount") {
+      sort.discountPercentage = sortOrder === "asc" ? 1 : -1;
+    } else {
+      sort[sortBy] = sortOrder === "asc" ? 1 : -1;
+    }
+
+    const skip = (page - 1) * limit;
+
+    // Execute query
+    const products = await Product.find(query)
+      .populate(
+        "availableInStores.storeId",
+        "name location.address location.city location.area",
+      )
+      .sort(sort)
+      .skip(skip)
+      .limit(parseInt(limit));
+
+    const total = await Product.countDocuments(query);
+
+    // Get categories for filters
+    const categories = await Product.distinct("category", { isActive: true });
+    const brands = await Product.distinct("brand", { isActive: true });
+
+    res.status(200).json({
+      success: true,
+      count: products.length,
+      total,
+      pages: Math.ceil(total / limit),
+      currentPage: page,
+      filters: {
+        categories,
+        brands,
+        priceRange: {
+          min: await Product.findOne({ isActive: true })
+            .sort("sellingPrice")
+            .select("sellingPrice"),
+          max: await Product.findOne({ isActive: true })
+            .sort("-sellingPrice")
+            .select("sellingPrice"),
+        },
+      },
+      products,
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+// @desc    Get unique categories and their subcategories
+// @route   GET /api/products/categories-list
+// @access  Public
+export const getCategoriesList1 = async (req, res, next) => {
+  try {
+    const data = await Product.aggregate([
+      { $match: { isActive: true } },
+      {
+        $group: {
+          _id: "$category",
+          subcategories: { $addToSet: "$subcategory" },
+        },
+      },
+      {
+        $project: {
+          category: "$_id",
+          subcategories: {
+            $filter: {
+              input: "$subcategories",
+              as: "sub",
+              cond: { $ne: ["$$sub", null] },
+            },
+          },
+          _id: 0,
+        },
+      },
+      { $sort: { category: 1 } },
+    ]);
+
+    res.status(200).json({
+      success: true,
+      data,
+    });
+  } catch (error) {
+    next(error);
+  }
+};
 
 // @desc    Get unique categories and their subcategories directly from products
 // @route   GET /api/products/categories-list
@@ -45,228 +203,6 @@ export const getCategoriesList = async (req, res, next) => {
 // @desc    Add new product
 // @route   POST /api/products
 // @access  Admin / Seller
-export const addProduct1 = async (req, res, next) => {
-  try {
-    const {
-      sku,
-      name,
-      category,
-      subcategory,
-      brand,
-      model,
-      description,
-      highlights,
-      images,
-      specifications,
-      mrp,
-      sellingPrice,
-      availableInStores = [],
-      isFeatured = false,
-      isNewArrival = false,
-      isBestSeller = false,
-      keywords,
-    } = req.body;
-
-    // --------------------
-    // Basic validation
-    // --------------------
-    if (
-      !sku ||
-      !name ||
-      !category ||
-      !brand ||
-      !model ||
-      !mrp ||
-      !sellingPrice
-    ) {
-      return res.status(400).json({
-        success: false,
-        error: "Required fields are missing",
-      });
-    }
-
-    if (sellingPrice > mrp) {
-      return res.status(400).json({
-        success: false,
-        error: "Selling price cannot exceed MRP",
-      });
-    }
-
-    // --------------------
-    // Check duplicate SKU
-    // --------------------
-    const existingProduct = await Product.findOne({
-      sku: sku.toUpperCase(),
-    });
-
-    if (existingProduct) {
-      return res.status(409).json({
-        success: false,
-        error: "Product with this SKU already exists",
-      });
-    }
-
-    // --------------------
-    // Validate stores (optional but recommended)
-    // --------------------
-    if (availableInStores.length > 0) {
-      const storeIds = availableInStores.map((s) => s.storeId);
-      const validStores = await Store.find({ _id: { $in: storeIds } });
-
-      if (validStores.length !== storeIds.length) {
-        return res.status(400).json({
-          success: false,
-          error: "One or more store IDs are invalid",
-        });
-      }
-    }
-
-    // --------------------
-    // Create product
-    // --------------------
-    const product = await Product.create({
-      sku: sku.toUpperCase(),
-      name,
-      category: category.toUpperCase(),
-      subcategory,
-      brand,
-      model,
-      description,
-      highlights,
-      images,
-      specifications,
-      mrp,
-      sellingPrice,
-      availableInStores,
-      isFeatured,
-      isNewArrival,
-      isBestSeller,
-      keywords,
-      createdBy: req.user?.id, // Admin / Seller
-    });
-
-    res.status(201).json({
-      success: true,
-      message: "Product added successfully",
-      product,
-    });
-  } catch (error) {
-    next(error);
-  }
-};
-
-export const addProduct2 = async (req, res, next) => {
-  try {
-    const {
-      sku,
-      name,
-      category,
-      subcategory,
-      brand,
-      model,
-      description,
-      highlights,
-      images,
-      specifications,
-      mrp,
-      sellingPrice,
-      availableInStores = [],
-      isFeatured = false,
-      isNewArrival = false,
-      isBestSeller = false,
-      keywords,
-    } = req.body;
-
-    console.log("req body ", req.body);
-
-    // --------------------
-    // Basic validation
-    // --------------------
-    if (
-      !sku ||
-      !name ||
-      !category ||
-      !brand ||
-      !model ||
-      !mrp ||
-      !sellingPrice
-    ) {
-      return res.status(400).json({
-        success: false,
-        error: "Required fields are missing",
-      });
-    }
-
-    if (sellingPrice > mrp) {
-      return res.status(400).json({
-        success: false,
-        error: "Selling price cannot exceed MRP",
-      });
-    }
-
-    // --------------------
-    // Check duplicate SKU
-    // --------------------
-    const existingProduct = await Product.findOne({
-      sku: sku.toUpperCase(),
-    });
-
-    if (existingProduct) {
-      return res.status(409).json({
-        success: false,
-        error: "Product with this SKU already exists",
-      });
-    }
-
-    // --------------------
-    // Validate stores (optional but recommended)
-    // --------------------
-    if (availableInStores.length > 0) {
-      const storeIds = availableInStores.map((s) => s.storeId);
-      const validStores = await Store.find({ _id: { $in: storeIds } });
-
-      if (validStores.length !== storeIds.length) {
-        return res.status(400).json({
-          success: false,
-          error: "One or more store IDs are invalid",
-        });
-      }
-    }
-
-    // --------------------
-    // Create product
-    // --------------------
-    const product = await Product.create({
-      sku: sku.toUpperCase(),
-      name,
-      category: category.toUpperCase(),
-      subcategory,
-      brand,
-      model,
-      description,
-      highlights,
-      images,
-      specifications,
-      mrp,
-      sellingPrice,
-      availableInStores,
-      isFeatured,
-      isNewArrival,
-      isBestSeller,
-      keywords,
-      createdBy: req.user?.id, // Admin / Seller
-    });
-
-    res.status(201).json({
-      success: true,
-      message: "Product added successfully",
-      product,
-    });
-  } catch (error) {
-    next(error);
-  }
-};
-
 export const addProduct = async (req, res, next) => {
   try {
     const {
@@ -281,7 +217,6 @@ export const addProduct = async (req, res, next) => {
       images,
       specifications,
       mrp,
-      overallStock,
       sellingPrice,
       availableInStores = [],
       isFeatured = false,
@@ -290,7 +225,9 @@ export const addProduct = async (req, res, next) => {
       keywords,
     } = req.body;
 
-    // ------------------ Validation ------------------
+    // --------------------
+    // Basic validation
+    // --------------------
     if (
       !sku ||
       !name ||
@@ -300,17 +237,26 @@ export const addProduct = async (req, res, next) => {
       !mrp ||
       !sellingPrice
     ) {
-      return res
-        .status(400)
-        .json({ success: false, error: "Required fields are missing" });
-    }
-    if (sellingPrice > mrp) {
-      return res
-        .status(400)
-        .json({ success: false, error: "Selling price cannot exceed MRP" });
+      return res.status(400).json({
+        success: false,
+        error: "Required fields are missing",
+      });
     }
 
-    const existingProduct = await Product.findOne({ sku: sku.toUpperCase() });
+    if (sellingPrice > mrp) {
+      return res.status(400).json({
+        success: false,
+        error: "Selling price cannot exceed MRP",
+      });
+    }
+
+    // --------------------
+    // Check duplicate SKU
+    // --------------------
+    const existingProduct = await Product.findOne({
+      sku: sku.toUpperCase(),
+    });
+
     if (existingProduct) {
       return res.status(409).json({
         success: false,
@@ -318,34 +264,34 @@ export const addProduct = async (req, res, next) => {
       });
     }
 
+    // --------------------
+    // Validate stores (optional but recommended)
+    // --------------------
     if (availableInStores.length > 0) {
       const storeIds = availableInStores.map((s) => s.storeId);
       const validStores = await Store.find({ _id: { $in: storeIds } });
+
       if (validStores.length !== storeIds.length) {
-        return res
-          .status(400)
-          .json({ success: false, error: "One or more store IDs are invalid" });
+        return res.status(400).json({
+          success: false,
+          error: "One or more store IDs are invalid",
+        });
       }
     }
 
-    // ------------------ Normalize images ------------------
-    const formattedImages = (images || []).map((img, i) =>
-      typeof img === "string"
-        ? { url: img, alt: name, isPrimary: i === 0 }
-        : img,
-    );
-
+    // --------------------
+    // Create product
+    // --------------------
     const product = await Product.create({
       sku: sku.toUpperCase(),
       name,
-      category: category.toLowerCase(),
+      category: category.toUpperCase(),
       subcategory,
       brand,
-      overallStock,
       model,
       description,
       highlights,
-      images: formattedImages,
+      images,
       specifications,
       mrp,
       sellingPrice,
@@ -354,66 +300,12 @@ export const addProduct = async (req, res, next) => {
       isNewArrival,
       isBestSeller,
       keywords,
-      createdBy: req.user?.id,
+      createdBy: req.user?.id, // Admin / Seller
     });
 
-    res
-      .status(201)
-      .json({ success: true, message: "Product added successfully", product });
-  } catch (error) {
-    next(error);
-  }
-};
-
-// @desc    Update product by ID
-// @route   PUT /api/products/:id
-// @access  Admin / Seller
-export const updateProduct2 = async (req, res, next) => {
-  try {
-    const { id } = req.body;
-
-    // console.log("req body", req.body);
-    // console.log("req params", req.params);
-    const updateFields = { ...req.body };
-
-    // Uppercase SKU and category if provided
-    if (updateFields.sku) updateFields.sku = updateFields.sku.toUpperCase();
-    if (updateFields.category)
-      updateFields.category = updateFields.category.toUpperCase();
-
-    // Validate stores if provided
-    if (
-      updateFields.availableInStores &&
-      updateFields.availableInStores.length > 0
-    ) {
-      const storeIds = updateFields.availableInStores.map((s) => s.storeId);
-      const validStores = await Store.find({ _id: { $in: storeIds } });
-      if (validStores.length !== storeIds.length) {
-        return res.status(400).json({
-          success: false,
-          error: "One or more store IDs are invalid",
-        });
-      }
-    }
-
-    // Find product and update
-    const product = await Product.findById(id);
-    if (!product) {
-      return res
-        .status(404)
-        .json({ success: false, error: "Product not found" });
-    }
-
-    // Update fields
-    Object.keys(updateFields).forEach((key) => {
-      product[key] = updateFields[key];
-    });
-
-    await product.save(); // triggers pre-save hooks
-
-    res.status(200).json({
+    res.status(201).json({
       success: true,
-      message: "Product updated successfully",
+      message: "Product added successfully",
       product,
     });
   } catch (error) {
@@ -424,72 +316,20 @@ export const updateProduct2 = async (req, res, next) => {
 // @desc    Update product by ID
 // @route   PUT /api/products/:id
 // @access  Admin / Seller
-export const updateProduct1 = async (req, res, next) => {
-  try {
-    const { id } = req.body;
-
-    // console.log("req body", req.body);
-    // console.log("req params", req.params);
-    const updateFields = { ...req.body };
-
-    // Uppercase SKU and category if provided
-    if (updateFields.sku) updateFields.sku = updateFields.sku.toUpperCase();
-    if (updateFields.category)
-      updateFields.category = updateFields.category.toUpperCase();
-
-    // Validate stores if provided
-    if (
-      updateFields.availableInStores &&
-      updateFields.availableInStores.length > 0
-    ) {
-      const storeIds = updateFields.availableInStores.map((s) => s.storeId);
-      const validStores = await Store.find({ _id: { $in: storeIds } });
-      if (validStores.length !== storeIds.length) {
-        return res.status(400).json({
-          success: false,
-          error: "One or more store IDs are invalid",
-        });
-      }
-    }
-
-    // Find product and update
-    const product = await Product.findById(id);
-    if (!product) {
-      return res
-        .status(404)
-        .json({ success: false, error: "Product not found" });
-    }
-
-    // Update fields
-    Object.keys(updateFields).forEach((key) => {
-      product[key] = updateFields[key];
-    });
-
-    await product.save(); // triggers pre-save hooks
-
-    res.status(200).json({
-      success: true,
-      message: "Product updated successfully",
-      product,
-    });
-  } catch (error) {
-    next(error);
-  }
-};
-
 export const updateProduct = async (req, res, next) => {
   try {
-    const { id, ...updateFields } = req.body;
+    const { id } = req.body;
 
-    if (!id)
-      return res
-        .status(400)
-        .json({ success: false, error: "Product ID is required" });
+    // console.log("req body", req.body);
+    // console.log("req params", req.params);
+    const updateFields = { ...req.body };
 
+    // Uppercase SKU and category if provided
     if (updateFields.sku) updateFields.sku = updateFields.sku.toUpperCase();
     if (updateFields.category)
-      updateFields.category = updateFields.category.toLowerCase();
+      updateFields.category = updateFields.category.toUpperCase();
 
+    // Validate stores if provided
     if (
       updateFields.availableInStores &&
       updateFields.availableInStores.length > 0
@@ -497,43 +337,33 @@ export const updateProduct = async (req, res, next) => {
       const storeIds = updateFields.availableInStores.map((s) => s.storeId);
       const validStores = await Store.find({ _id: { $in: storeIds } });
       if (validStores.length !== storeIds.length) {
-        return res
-          .status(400)
-          .json({ success: false, error: "One or more store IDs are invalid" });
+        return res.status(400).json({
+          success: false,
+          error: "One or more store IDs are invalid",
+        });
       }
     }
 
-    if (updateFields.images && Array.isArray(updateFields.images)) {
-      updateFields.images = updateFields.images.map((img, i) =>
-        typeof img === "string"
-          ? {
-              url: img,
-              alt: updateFields.name || "Product",
-              isPrimary: i === 0,
-            }
-          : img,
-      );
-    }
-
+    // Find product and update
     const product = await Product.findById(id);
-    if (!product)
+    if (!product) {
       return res
         .status(404)
         .json({ success: false, error: "Product not found" });
+    }
 
+    // Update fields
     Object.keys(updateFields).forEach((key) => {
       product[key] = updateFields[key];
     });
 
-    await product.save();
+    await product.save(); // triggers pre-save hooks
 
-    res
-      .status(200)
-      .json({
-        success: true,
-        message: "Product updated successfully",
-        product,
-      });
+    res.status(200).json({
+      success: true,
+      message: "Product updated successfully",
+      product,
+    });
   } catch (error) {
     next(error);
   }

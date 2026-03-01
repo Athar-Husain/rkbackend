@@ -24,6 +24,9 @@ import adminRoutes from "./routes/admin.js";
 import staffRoutes from "./routes/staff.js";
 import locationRoutes from "./routes/cityArea.js";
 import analyticsRoutes from "./routes/analytics.js";
+import homeRoutes from "./routes/home.js";
+import bannerRoutes from "./routes/banner.routes.js";
+import promotionRoutes from "./routes/banner.routes.js";
 
 // Middleware
 import errorHandler from "./middleware/errorHandler.js";
@@ -104,6 +107,9 @@ app.use("/api/locations", locationRoutes);
 app.use("/api/admin", adminRoutes);
 app.use("/api/staff", staffRoutes);
 app.use("/api/analytics", analyticsRoutes);
+app.use("/api/home", homeRoutes);
+app.use("/api/banner", bannerRoutes);
+app.use("/api/promotion", promotionRoutes);
 
 /* =======================
    Health Check

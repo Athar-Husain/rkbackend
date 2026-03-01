@@ -16,7 +16,759 @@ import mongoose from "mongoose";
 // @desc    Record a purchase (for store staff)
 // @route   POST /api/purchases
 // @access  Private (Store staff)
+export const recordPurchase2 = async (req, res, next) => {
+  try {
+    console.log("req.user", req.staff);
+    const {
+      userId,
 
+      items,
+      discount = 0,
+      tax = 0,
+      couponCode,
+      paymentMethod = "CASH",
+      delivery = {},
+      notes = "",
+    } = req.body;
+
+    let storeId = req.staff.storeId;
+
+    // Validate required fields
+    if (
+      !userId ||
+      !storeId ||
+      !items ||
+      !Array.isArray(items) ||
+      items.length === 0
+    ) {
+      return res.status(400).json({
+        success: false,
+        error: "Please provide user ID, store ID, and at least one item",
+      });
+    }
+
+    // Verify user exists
+    const user = await User.findById(userId);
+    if (!user) {
+      return res.status(404).json({
+        success: false,
+        error: "User not found",
+      });
+    }
+
+    // Verify store exists
+    // const Store = require("../models/Store.model.js");
+    const store = await Store.findById(storeId);
+    if (!store) {
+      return res.status(404).json({
+        success: false,
+        error: "Store not found",
+      });
+    }
+
+    // Process items
+    let subtotal = 0;
+    const processedItems = [];
+
+    for (const item of items) {
+      const product = await Product.findById(item.productId);
+      if (!product) {
+        return res.status(404).json({
+          success: false,
+          error: `Product not found: ${item.productId}`,
+        });
+      }
+
+      const unitPrice = item.unitPrice || product.sellingPrice;
+      const quantity = item.quantity || 1;
+      const totalPrice = unitPrice * quantity;
+
+      processedItems.push({
+        productId: product._id,
+        sku: product.sku,
+        name: product.name,
+        category: product.category,
+        brand: product.brand,
+        model: product.model,
+        quantity,
+        unitPrice,
+        totalPrice,
+        specifications: product.specifications,
+      });
+
+      subtotal += totalPrice;
+
+      // Update product stock if needed
+      if (product.availableInStores && product.availableInStores.length > 0) {
+        const storeIndex = product.availableInStores.findIndex(
+          (s) => s.storeId.toString() === storeId.toString(),
+        );
+
+        if (
+          storeIndex !== -1 &&
+          product.availableInStores[storeIndex].stock >= quantity
+        ) {
+          product.availableInStores[storeIndex].stock -= quantity;
+          product.overallStock -= quantity;
+          await product.save();
+        }
+      }
+    }
+
+    // Handle coupon if provided
+    let couponUsed = null;
+    if (couponCode) {
+      // Find user coupon
+      const userCoupon = await UserCoupon.findOne({
+        uniqueCode: couponCode,
+        userId: userId,
+        status: "ACTIVE",
+      }).populate("couponId");
+
+      if (userCoupon) {
+        // Validate coupon
+        if (userCoupon.isExpired) {
+          return res.status(400).json({
+            success: false,
+            error: "Coupon has expired",
+          });
+        }
+
+        // Check minimum purchase
+        if (userCoupon.couponId.minPurchaseAmount > subtotal) {
+          return res.status(400).json({
+            success: false,
+            error: `Minimum purchase of ₹${userCoupon.couponId.minPurchaseAmount} required for this coupon`,
+          });
+        }
+
+        // Calculate discount from coupon
+        const couponDiscount = userCoupon.couponId.calculateDiscount(subtotal);
+
+        // Update discount
+        discount = Math.max(discount, couponDiscount);
+
+        // Mark coupon for redemption
+        couponUsed = {
+          userCouponId: userCoupon._id,
+          couponCode: userCoupon.couponId.code,
+          discountApplied: couponDiscount,
+        };
+      }
+    }
+
+    // Calculate final amount
+    const finalAmount = subtotal - discount + tax;
+
+    // Create purchase record
+    const purchase = new Purchase({
+      userId,
+      storeId,
+      // staffId: req.staff?.username || "system",
+      staffId: req.staff?._id || null,
+      items: processedItems,
+      subtotal,
+      discount,
+      tax,
+      finalAmount,
+      couponUsed,
+      payment: {
+        method: paymentMethod,
+        status: "COMPLETED",
+      },
+      delivery,
+      notes,
+      status: "COMPLETED",
+    });
+
+    await purchase.save();
+
+    // Mark coupon as redeemed if used
+    if (couponUsed && couponUsed.userCouponId) {
+      const userCoupon = await UserCoupon.findById(couponUsed.userCouponId);
+      if (userCoupon) {
+        await userCoupon.redeem(
+          storeId,
+          req.staff?.username || "system",
+          purchase._id,
+          couponUsed.discountApplied,
+        );
+      }
+    }
+
+    // Check if this is user's first purchase (for referral completion)
+    const userPurchaseCount = await Purchase.countDocuments({ userId: userId });
+    if (userPurchaseCount === 1) {
+      // Find pending referral for this user
+      const referral = await Referral.findOne({
+        referredUserId: userId,
+        status: "PENDING",
+      });
+
+      if (referral) {
+        await referral.markAsFirstPurchase(purchase._id);
+
+        // Send notification to referrer
+        await sendPushNotification(
+          referral.referrerId,
+          "Referral Completed!",
+          `${user.name} made their first purchase. You've earned a ₹500 coupon!`,
+        );
+      }
+    }
+
+    // Send receipt to user
+    // await sendSMS(
+    //   user.mobile,
+    //   `Thank you for shopping at RK Electronics! Your purchase of ₹${finalAmount} is confirmed. Invoice: ${purchase.invoiceNumber}. Keep this app for future offers.`,
+    // );
+
+    res.status(201).json({
+      success: true,
+      purchase: {
+        id: purchase._id,
+        invoiceNumber: purchase.invoiceNumber,
+        date: purchase.createdAt,
+        customer: {
+          name: user.name,
+          mobile: user.mobile,
+        },
+        store: {
+          name: store.name,
+          address: store.location.address,
+        },
+        items: purchase.items.map((item) => ({
+          name: item.name,
+          quantity: item.quantity,
+          price: item.unitPrice,
+          total: item.totalPrice,
+        })),
+        summary: {
+          subtotal: purchase.subtotal,
+          discount: purchase.discount,
+          tax: purchase.tax,
+          finalAmount: purchase.finalAmount,
+        },
+        payment: purchase.payment.method,
+        couponUsed: purchase.couponUsed
+          ? {
+              code: purchase.couponUsed.couponCode,
+              discount: purchase.couponUsed.discountApplied,
+            }
+          : null,
+      },
+      message: "Purchase recorded successfully",
+    });
+  } catch (error) {
+    console.log("error", error.message);
+    next(error);
+  }
+};
+
+export const recordPurchase1 = async (req, res, next) => {
+  try {
+    const {
+      userId,
+      storeId,
+      items,
+      discount = 0,
+      tax = 0,
+      couponCode,
+      paymentMethod = "CASH",
+      delivery = {},
+      notes = "",
+    } = req.body;
+
+    // Validate required fields
+    if (
+      !userId ||
+      !storeId ||
+      !items ||
+      !Array.isArray(items) ||
+      items.length === 0
+    ) {
+      return res.status(400).json({
+        success: false,
+        error: "Please provide user ID, store ID, and at least one item",
+      });
+    }
+
+    // Verify user exists
+    const user = await User.findById(userId);
+    if (!user) {
+      return res.status(404).json({
+        success: false,
+        error: "User not found",
+      });
+    }
+
+    // Verify store exists
+    // const Store = require("../models/Store.model.js");
+    const store = await Store.findById(storeId);
+    if (!store) {
+      return res.status(404).json({
+        success: false,
+        error: "Store not found",
+      });
+    }
+
+    // Process items
+    let subtotal = 0;
+    const processedItems = [];
+
+    for (const item of items) {
+      const product = await Product.findById(item.productId);
+      if (!product) {
+        return res.status(404).json({
+          success: false,
+          error: `Product not found: ${item.productId}`,
+        });
+      }
+
+      const unitPrice = item.unitPrice || product.sellingPrice;
+      const quantity = item.quantity || 1;
+      const totalPrice = unitPrice * quantity;
+
+      processedItems.push({
+        productId: product._id,
+        sku: product.sku,
+        name: product.name,
+        category: product.category,
+        brand: product.brand,
+        model: product.model,
+        quantity,
+        unitPrice,
+        totalPrice,
+        specifications: product.specifications,
+      });
+
+      subtotal += totalPrice;
+
+      // Update product stock if needed
+      if (product.availableInStores && product.availableInStores.length > 0) {
+        const storeIndex = product.availableInStores.findIndex(
+          (s) => s.storeId.toString() === storeId.toString(),
+        );
+
+        if (
+          storeIndex !== -1 &&
+          product.availableInStores[storeIndex].stock >= quantity
+        ) {
+          product.availableInStores[storeIndex].stock -= quantity;
+          product.overallStock -= quantity;
+          await product.save();
+        }
+      }
+    }
+
+    // Handle coupon if provided
+    let couponUsed = null;
+    if (couponCode) {
+      // Find user coupon
+      const userCoupon = await UserCoupon.findOne({
+        uniqueCode: couponCode,
+        userId: userId,
+        status: "ACTIVE",
+      }).populate("couponId");
+
+      if (userCoupon) {
+        // Validate coupon
+        if (userCoupon.isExpired) {
+          return res.status(400).json({
+            success: false,
+            error: "Coupon has expired",
+          });
+        }
+
+        // Check minimum purchase
+        if (userCoupon.couponId.minPurchaseAmount > subtotal) {
+          return res.status(400).json({
+            success: false,
+            error: `Minimum purchase of ₹${userCoupon.couponId.minPurchaseAmount} required for this coupon`,
+          });
+        }
+
+        // Calculate discount from coupon
+        const couponDiscount = userCoupon.couponId.calculateDiscount(subtotal);
+
+        // Update discount
+        discount = Math.max(discount, couponDiscount);
+
+        // Mark coupon for redemption
+        couponUsed = {
+          userCouponId: userCoupon._id,
+          couponCode: userCoupon.couponId.code,
+          discountApplied: couponDiscount,
+        };
+      }
+    }
+
+    // Calculate final amount
+    const finalAmount = subtotal - discount + tax;
+
+    // Create purchase record
+    const purchase = new Purchase({
+      userId,
+      storeId,
+      staffId: req.staff?.username || "system",
+      items: processedItems,
+      subtotal,
+      discount,
+      tax,
+      finalAmount,
+      couponUsed,
+      payment: {
+        method: paymentMethod,
+        status: "COMPLETED",
+      },
+      delivery,
+      notes,
+      status: "COMPLETED",
+    });
+
+    await purchase.save();
+
+    // Mark coupon as redeemed if used
+    if (couponUsed && couponUsed.userCouponId) {
+      const userCoupon = await UserCoupon.findById(couponUsed.userCouponId);
+      if (userCoupon) {
+        await userCoupon.redeem(
+          storeId,
+          req.staff?.username || "system",
+          purchase._id,
+          couponUsed.discountApplied,
+        );
+      }
+    }
+
+    // Check if this is user's first purchase (for referral completion)
+    const userPurchaseCount = await Purchase.countDocuments({ userId: userId });
+    if (userPurchaseCount === 1) {
+      // Find pending referral for this user
+      const referral = await Referral.findOne({
+        referredUserId: userId,
+        status: "PENDING",
+      });
+
+      if (referral) {
+        await referral.markAsFirstPurchase(purchase._id);
+
+        // Send notification to referrer
+        await sendPushNotification(
+          referral.referrerId,
+          "Referral Completed!",
+          `${user.name} made their first purchase. You've earned a ₹500 coupon!`,
+        );
+      }
+    }
+
+    // Send receipt to user
+    await sendNotificationSMS(
+      user.mobile,
+      `Thank you for shopping at RK Electronics! Your purchase of ₹${finalAmount} is confirmed. Invoice: ${purchase.invoiceNumber}. Keep this app for future offers.`,
+    );
+
+    res.status(201).json({
+      success: true,
+      purchase: {
+        id: purchase._id,
+        invoiceNumber: purchase.invoiceNumber,
+        date: purchase.createdAt,
+        customer: {
+          name: user.name,
+          mobile: user.mobile,
+        },
+        store: {
+          name: store.name,
+          address: store.location.address,
+        },
+        items: purchase.items.map((item) => ({
+          name: item.name,
+          quantity: item.quantity,
+          price: item.unitPrice,
+          total: item.totalPrice,
+        })),
+        summary: {
+          subtotal: purchase.subtotal,
+          discount: purchase.discount,
+          tax: purchase.tax,
+          finalAmount: purchase.finalAmount,
+        },
+        payment: purchase.payment.method,
+        couponUsed: purchase.couponUsed
+          ? {
+              code: purchase.couponUsed.couponCode,
+              discount: purchase.couponUsed.discountApplied,
+            }
+          : null,
+      },
+      message: "Purchase recorded successfully",
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+export const recordPurchase3 = async (req, res, next) => {
+  try {
+    console.log("🔹 Step 0: Request received");
+    console.log("req.staff:", req.staff);
+
+    const {
+      userId,
+      items,
+      // discount = 0,
+      tax = 0,
+      couponCode,
+      paymentMethod = "CASH",
+      delivery = {},
+      notes = "",
+    } = req.body;
+
+    let { discount = 0 } = req.body;
+
+    const storeId = req.staff?.storeId;
+    console.log("🔹 Step 1: Extracted storeId:", storeId);
+
+    // Validate required fields
+    if (
+      !userId ||
+      !storeId ||
+      !items ||
+      !Array.isArray(items) ||
+      items.length === 0
+    ) {
+      console.log("❌ Step 2: Validation failed");
+      return res.status(400).json({
+        success: false,
+        error: "Please provide user ID, store ID, and at least one item",
+      });
+    }
+    console.log("✅ Step 2: Validation passed");
+
+    // Verify user exists
+    const user = await User.findById(userId);
+    if (!user) {
+      console.log("❌ Step 3: User not found");
+      return res.status(404).json({ success: false, error: "User not found" });
+    }
+    console.log("✅ Step 3: User found:", user.name);
+
+    // Verify store exists
+    const store = await Store.findById(storeId);
+    if (!store) {
+      console.log("❌ Step 4: Store not found");
+      return res.status(404).json({ success: false, error: "Store not found" });
+    }
+    console.log("✅ Step 4: Store found:", store.name);
+
+    // Process items
+    let subtotal = 0;
+    const processedItems = [];
+
+    console.log("🔹 Step 5: Processing items");
+    for (const [index, item] of items.entries()) {
+      console.log(`  → Processing item ${index + 1}:`, item);
+
+      let processedItem = {};
+
+      if (item.productId) {
+        const product = await Product.findById(item.productId);
+        if (!product) {
+          console.log(
+            `❌ Step 5.${index + 1}: Product not found`,
+            item.productId,
+          );
+          return res.status(404).json({
+            success: false,
+            error: `Product not found: ${item.productId}`,
+          });
+        }
+
+        const unitPrice = item.unitPrice || product.sellingPrice;
+        const quantity = item.quantity || 1;
+        const totalPrice = unitPrice * quantity;
+
+        processedItem = {
+          productId: product._id,
+          sku: product.sku,
+          name: product.name,
+          category: product.category,
+          brand: product.brand,
+          model: product.model,
+          quantity,
+          unitPrice,
+          totalPrice,
+          specifications: product.specifications,
+          taxPercent: item.taxPercent || 0,
+        };
+
+        // Update stock
+        if (product.availableInStores?.length) {
+          const storeIndex = product.availableInStores.findIndex(
+            (s) => s.storeId.toString() === storeId.toString(),
+          );
+
+          if (
+            storeIndex !== -1 &&
+            product.availableInStores[storeIndex].stock >= quantity
+          ) {
+            product.availableInStores[storeIndex].stock -= quantity;
+            product.overallStock -= quantity;
+            await product.save();
+            console.log(`    ✅ Updated stock for product ${product.name}`);
+          }
+        }
+      } else {
+        // Custom item
+        const quantity = item.quantity || 1;
+        const unitPrice = item.unitPrice || 0;
+        const totalPrice = unitPrice * quantity;
+
+        processedItem = {
+          isCustomItem: true,
+          name: item.name,
+          quantity,
+          unitPrice,
+          totalPrice,
+          taxPercent: item.taxPercent || 0,
+        };
+      }
+
+      subtotal += processedItem.totalPrice;
+      processedItems.push(processedItem);
+      console.log(`    ✅ Processed item:`, processedItem);
+    }
+
+    console.log("✅ Step 5: All items processed. Subtotal:", subtotal);
+
+    // Handle coupon
+    let couponUsed = null;
+    console.log("🔹 Step 6: Processing coupon if any");
+    if (couponCode) {
+      const userCoupon = await UserCoupon.findOne({
+        uniqueCode: couponCode,
+        userId,
+        status: "ACTIVE",
+      }).populate("couponId");
+
+      if (userCoupon) {
+        if (userCoupon.isExpired) {
+          console.log("❌ Step 6: Coupon expired");
+          return res
+            .status(400)
+            .json({ success: false, error: "Coupon has expired" });
+        }
+
+        if (userCoupon.couponId.minPurchaseAmount > subtotal) {
+          console.log("❌ Step 6: Minimum purchase not met for coupon");
+          return res.status(400).json({
+            success: false,
+            error: `Minimum purchase of ₹${userCoupon.couponId.minPurchaseAmount} required`,
+          });
+        }
+
+        const couponDiscount = userCoupon.couponId.calculateDiscount(subtotal);
+        discount = Math.max(discount, couponDiscount);
+
+        couponUsed = {
+          userCouponId: userCoupon._id,
+          couponCode: userCoupon.couponId.code,
+          discountApplied: couponDiscount,
+        };
+        console.log("✅ Step 6: Coupon applied", couponUsed);
+      }
+    }
+
+    // Calculate final amount
+    const finalAmount = subtotal - discount + tax;
+    console.log("🔹 Step 7: Calculated final amount:", finalAmount);
+
+    // Create purchase
+    const purchase = new Purchase({
+      userId,
+      storeId,
+      staffId: req.staff?._id || null,
+      items: processedItems,
+      subtotal,
+      discount,
+      tax,
+      finalAmount,
+      couponUsed,
+      payment: { method: paymentMethod, status: "COMPLETED" },
+      delivery,
+      notes,
+      status: "COMPLETED",
+    });
+
+    await purchase.save();
+    console.log("✅ Step 8: Purchase saved:", purchase._id);
+
+    // Mark coupon redeemed
+    if (couponUsed?.userCouponId) {
+      const userCoupon = await UserCoupon.findById(couponUsed.userCouponId);
+      if (userCoupon) {
+        await userCoupon.redeem(
+          storeId,
+          req.staff?.username || "system",
+          purchase._id,
+          couponUsed.discountApplied,
+        );
+        console.log("✅ Step 9: Coupon redeemed");
+      }
+    }
+
+    // Check referral
+    const userPurchaseCount = await Purchase.countDocuments({ userId });
+    console.log("🔹 Step 10: User purchase count:", userPurchaseCount);
+
+    if (userPurchaseCount === 1) {
+      const referral = await Referral.findOne({
+        referredUserId: userId,
+        status: "PENDING",
+      });
+      if (referral) {
+        await referral.markAsFirstPurchase(purchase._id);
+        await sendPushNotification(
+          referral.referrerId,
+          "Referral Completed!",
+          `${user.name} made their first purchase. You've earned a ₹500 coupon!`,
+        );
+        console.log("✅ Step 10: Referral processed and notification sent");
+      }
+    }
+
+    console.log("🔹 Step 11: Returning response to frontend");
+    res.status(201).json({
+      success: true,
+      purchase: {
+        id: purchase._id,
+        invoiceNumber: purchase.invoiceNumber,
+        date: purchase.createdAt,
+        customer: { name: user.name, mobile: user.mobile },
+        store: { name: store.name, address: store.location.address },
+        items: purchase.items.map((i) => ({
+          name: i.name,
+          quantity: i.quantity,
+          price: i.unitPrice,
+          total: i.totalPrice,
+        })),
+        summary: { subtotal, discount, tax, finalAmount },
+        payment: purchase.payment.method,
+        couponUsed: couponUsed
+          ? {
+              code: couponUsed.couponCode,
+              discount: couponUsed.discountApplied,
+            }
+          : null,
+      },
+      message: "Purchase recorded successfully",
+    });
+  } catch (error) {
+    console.log("❌ Step 12: Error caught:", error.message);
+    next(error);
+  }
+};
 
 export const recordPurchaseproduction = async (req, res, next) => {
   const session = await mongoose.startSession();
@@ -869,6 +1621,50 @@ export const getStoreSalesReport = async (req, res, next) => {
 // @desc    Export purchases to Excel
 // @route   GET /api/purchases/export
 // @access  Private (Admin)
+export const exportPurchases1 = async (req, res, next) => {
+  try {
+    const { startDate, endDate, storeId } = req.query;
+
+    const query = { status: "COMPLETED" };
+
+    if (startDate || endDate) {
+      query.createdAt = {};
+      if (startDate) query.createdAt.$gte = new Date(startDate);
+      if (endDate) query.createdAt.$lte = new Date(endDate);
+    }
+
+    if (storeId) {
+      query.storeId = storeId;
+    }
+
+    const purchases = await Purchase.find(query)
+      .populate("storeId", "name location.city location.area")
+      .populate("userId", "name mobile")
+      .sort({ createdAt: -1 })
+      .limit(1000); // Limit for export
+
+    // Generate Excel file
+    // const { exportSalesReportToExcel } = require("../utils/excelHelper");
+    const result = await exportSalesReportToExcel(purchases);
+
+    res.download(result.filePath, result.fileName, (err) => {
+      if (err) {
+        console.error("Error downloading file:", err);
+        res.status(500).json({
+          success: false,
+          error: "Error downloading file",
+        });
+      }
+
+      // Clean up file after download
+      // const fs = require("fs");
+
+      fs.unlinkSync(result.filePath);
+    });
+  } catch (error) {
+    next(error);
+  }
+};
 
 export const exportPurchases = async (req, res, next) => {
   try {

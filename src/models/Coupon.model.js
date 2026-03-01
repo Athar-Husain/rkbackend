@@ -17,6 +17,12 @@ const couponSchema = new mongoose.Schema(
     },
     description: String,
 
+    // Notification Template (Stored for auto-triggering new users)
+    notification: {
+      title: { type: String, default: "" },
+      body: { type: String, default: "" },
+    },
+
     // Value
     type: {
       type: String,
@@ -28,7 +34,7 @@ const couponSchema = new mongoose.Schema(
       required: true,
       min: 0,
     },
-    maxDiscount: Number,
+    maxDiscountAmount: { type: Number, default: 0 },
     minPurchaseAmount: {
       type: Number,
       default: 0,
@@ -85,6 +91,7 @@ const couponSchema = new mongoose.Schema(
           ref: "User",
         },
       ],
+      csvMobiles: [String], // Storing raw list for audit
 
       purchaseHistory: {
         minPurchases: { type: Number, default: 0 },
@@ -116,27 +123,32 @@ const couponSchema = new mongoose.Schema(
         enum: ["ALL_PRODUCTS", "CATEGORY", "PRODUCT", "BRAND"],
         default: "ALL_PRODUCTS",
       },
-      categories: [String],
+      categories: [
+        {
+          type: String,
+          uppercase: true,
+          trim: true,
+        },
+      ],
+      brands: [
+        {
+          type: String,
+          uppercase: true,
+          trim: true,
+        },
+      ],
       products: [
         {
           type: mongoose.Schema.Types.ObjectId,
           ref: "Product",
         },
       ],
-      brands: [String],
     },
 
     // Validity
-    validFrom: {
-      type: Date,
-      required: true,
-    },
-    validUntil: {
-      type: Date,
-      required: true,
-    },
+    validFrom: { type: Date, required: true },
+    validUntil: { type: Date, required: true },
 
-    // Usage Limits
     maxRedemptions: { type: Number, default: 1000 },
     currentRedemptions: { type: Number, default: 0 },
     perUserLimit: { type: Number, default: 1 },
@@ -153,10 +165,10 @@ const couponSchema = new mongoose.Schema(
     },
 
     // Metadata
-    createdBy: {
-      type: mongoose.Schema.Types.ObjectId,
-      ref: "User",
-    },
+    // createdBy: {
+    //   type: mongoose.Schema.Types.ObjectId,
+    //   ref: "User",
+    // },
   },
   {
     timestamps: true,

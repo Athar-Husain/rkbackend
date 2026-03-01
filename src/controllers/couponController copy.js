@@ -10,13 +10,237 @@ import {
   getDiscoverableCoupons,
   getEligibleCouponsForUser,
   isUserEligibleForCoupon,
+  isUserEligibleForCoupon2,
 } from "../services/targetingService.js";
 import Purchase from "../models/Purchase.model.js";
+// import NotificationService from "../services/notificationService.js";
+// import { sendPushNotification } from "../utils/notification.js"; // Your existing helper
 
 /**
  * @desc    Create coupon
  */
-export const createCoupon1 = async (req, res, next) => {
+
+export const createCoupon2 = async (req, res, next) => {
+  try {
+    const data = req.body;
+
+    const exists = await Coupon.findOne({
+      code: data.code.toUpperCase(),
+    });
+
+    if (exists) {
+      return res.status(400).json({
+        success: false,
+        error: "Coupon code already exists",
+      });
+    }
+
+    const coupon = await Coupon.create({
+      ...data,
+      code: data.code.toUpperCase(),
+      status: "ACTIVE",
+      createdBy: req.admin?._id || null,
+    });
+
+    let assignment = null;
+    if (
+      coupon.targeting.type !== "INDIVIDUAL" ||
+      coupon.targeting.users?.length
+    ) {
+      assignment = await assignCouponToEligibleUsers(coupon._id);
+    }
+
+    res.status(201).json({
+      success: true,
+      coupon,
+      assignment,
+      message: "Coupon created successfully",
+    });
+  } catch (err) {
+    next(err);
+  }
+};
+
+export const getCouponAnalytics1 = async (req, res, next) => {
+  try {
+    const coupons = await Coupon.find().sort({ createdAt: -1 });
+
+    const analytics = await Promise.all(
+      coupons.map(async (c) => ({
+        coupon: c,
+        redemptions: await UserCoupon.countDocuments({
+          couponId: c._id,
+          status: "USED",
+        }),
+      })),
+    );
+
+    res.json({ success: true, analytics });
+  } catch (err) {
+    next(err);
+  }
+};
+export const getCouponAnalytics2 = async (req, res, next) => {
+  try {
+    const stats = await UserCoupon.aggregate([
+      { $match: { status: "USED" } },
+      { $group: { _id: "$couponId", redemptionCount: { $sum: 1 } } },
+    ]);
+    // Join this with your Coupon data if needed
+    res.json({ success: true, stats });
+  } catch (err) {
+    next(err);
+  }
+};
+
+export const claimCoupon2 = async (req, res, next) => {
+  try {
+    const coupon = await Coupon.findById(req.params.id);
+
+    if (!coupon) {
+      return res.status(404).json({
+        success: false,
+        error: "Coupon not found",
+      });
+    }
+
+    // Check if coupon is active
+    if (coupon.status !== "ACTIVE") {
+      return res.status(400).json({
+        success: false,
+        error: "Coupon is not active",
+      });
+    }
+
+    // Check if coupon has expired
+    if (new Date() > coupon.validUntil) {
+      return res.status(400).json({
+        success: false,
+        error: "Coupon has expired",
+      });
+    }
+
+    // Check redemption limits
+    if (coupon.currentRedemptions >= coupon.maxRedemptions) {
+      return res.status(400).json({
+        success: false,
+        error: "Coupon redemption limit reached",
+      });
+    }
+
+    // Check user eligibility
+    // const User = require("../models/User.model.js");
+    const user = await User.findById(req.user.id);
+
+    const eligibility = await isUserEligibleForCoupon(user, coupon);
+
+    if (!eligibility.eligible) {
+      return res.status(400).json({
+        success: false,
+        error: eligibility.reasons.join(", "),
+      });
+    }
+
+    // Check if user already has this coupon
+    const existingUserCoupon = await UserCoupon.findOne({
+      userId: req.user.id,
+      couponId: coupon._id,
+      status: { $in: ["ACTIVE", "USED"] },
+    });
+
+    if (existingUserCoupon) {
+      return res.status(400).json({
+        success: false,
+        error: "You already have this coupon",
+        userCoupon: existingUserCoupon,
+      });
+    }
+
+    // Create user coupon
+    const userCoupon = new UserCoupon({
+      userId: req.user.id,
+      couponId: coupon._id,
+      validFrom: coupon.validFrom,
+      validUntil: coupon.validUntil,
+    });
+
+    await userCoupon.save();
+
+    // Send notification to user
+    await sendPushNotification(
+      req.user.id,
+      "Coupon Claimed!",
+      `You have successfully claimed "${coupon.title}" coupon. Check your wallet to use it.`,
+    );
+
+    res.status(200).json({
+      success: true,
+      message: "Coupon claimed successfully",
+      userCoupon: {
+        id: userCoupon._id,
+        uniqueCode: userCoupon.uniqueCode,
+        qrCodeImage: userCoupon.qrCodeImage,
+        validUntil: userCoupon.validUntil,
+      },
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+export const validateForStaff1 = async (req, res) => {
+  try {
+    const { code, type, purchaseAmount, cartItems } = req.body;
+    // 'code' is either the decrypted QR string or the manual 6-digit code
+
+    let result;
+    if (type === "QR") {
+      result = await UserCoupon.validateQRCode(code);
+    } else {
+      result = await UserCoupon.validateManualCode(code);
+    }
+
+    if (!result.valid)
+      return res.status(400).json({ success: false, message: result.message });
+
+    const { coupon, user, userCoupon } = result;
+
+    // Check Product Restrictions (Refined logic)
+    const isProductValid =
+      coupon.productRules.type === "ALL_PRODUCTS" ||
+      cartItems.some((item) => {
+        if (coupon.productRules.type === "CATEGORY")
+          return coupon.productRules.categories.includes(item.category);
+        if (coupon.productRules.type === "BRAND")
+          return coupon.productRules.brands.includes(item.brand);
+        return false;
+      });
+
+    if (!isProductValid) {
+      return res.status(400).json({
+        success: false,
+        message: "Coupon not valid for items in cart",
+      });
+    }
+
+    const discount = coupon.calculateDiscount(purchaseAmount);
+
+    res.json({
+      success: true,
+      data: {
+        userCouponId: userCoupon._id,
+        userName: user.name,
+        discountAmount: discount,
+        finalPayable: purchaseAmount - discount,
+        couponTitle: coupon.title,
+      },
+    });
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+};
+
+export const createCoupon = async (req, res, next) => {
   try {
     const newCoupon = await Coupon.create(req.body);
 
@@ -89,457 +313,6 @@ export const createCoupon1 = async (req, res, next) => {
       message: "Coupon created successfully",
     });
   } catch (err) {
-    next(err);
-  }
-};
-
-export const createCoupon2 = async (req, res, next) => {
-  try {
-    const { productRules = {} } = req.body;
-
-    // --------------------------
-    // Upsert new categories/brands from this coupon
-    // --------------------------
-    const existingCoupons = await Coupon.find({}, { productRules: 1 });
-
-    const allCategories = new Set();
-    const allBrands = new Set();
-
-    existingCoupons.forEach((c) => {
-      if (c.productRules?.categories?.length)
-        c.productRules.categories.forEach((cat) => allCategories.add(cat));
-      if (c.productRules?.brands?.length)
-        c.productRules.brands.forEach((brand) => allBrands.add(brand));
-    });
-
-    // Add current coupon entries
-    if (productRules?.categories?.length)
-      productRules.categories.forEach((cat) => allCategories.add(cat));
-    if (productRules?.brands?.length)
-      productRules.brands.forEach((brand) => allBrands.add(brand));
-
-    // Save new coupon
-    const newCoupon = await Coupon.create(req.body);
-
-    // --------------------------
-    // SEND NOTIFICATIONS ONLY IF ACTIVE
-    // --------------------------
-    if (newCoupon.status === "ACTIVE") {
-      let userQuery = { isActive: true, isBlocked: false };
-      const targeting = newCoupon.targeting || {};
-      const type = targeting.type || "ALL";
-
-      switch (type) {
-        case "ALL":
-          break;
-        case "GEOGRAPHIC":
-          if (targeting.geographic?.cities?.length)
-            userQuery.city = { $in: targeting.geographic.cities };
-          if (targeting.geographic?.areas?.length)
-            userQuery.area = { $in: targeting.geographic.areas };
-          break;
-        case "INDIVIDUAL":
-          userQuery._id = targeting.users?.length
-            ? { $in: targeting.users }
-            : null;
-          break;
-        case "PURCHASE_HISTORY":
-          const usersWithPurchase = await Purchase.distinct("userId");
-          userQuery._id = { $in: usersWithPurchase };
-          break;
-        case "REFERRAL":
-          userQuery.referredBy = { $exists: true, $ne: null };
-          break;
-        default:
-          userQuery._id = null;
-      }
-
-      const targetUsers = await User.find(userQuery).select("_id");
-      const userIds = targetUsers.map((u) => u._id);
-
-      if (userIds.length > 0) {
-        await sendBulkNotifications(userIds, "User", {
-          title: "New Offer for You! 🎁",
-          body: `Use code ${newCoupon.code} to get ₹${newCoupon.value} off.`,
-          category: "COUPON",
-          targetScreen: "COUPON_DETAILS",
-          targetId: newCoupon._id.toString(),
-          channels: ["PUSH"],
-        });
-      }
-    }
-
-    return res.status(201).json({
-      success: true,
-      data: newCoupon,
-      message: "Coupon created successfully",
-      dynamicOptions: {
-        categories: Array.from(allCategories),
-        brands: Array.from(allBrands),
-      },
-    });
-  } catch (err) {
-    next(err);
-  }
-};
-
-export const createCoupon3 = async (req, res, next) => {
-  try {
-    let { productRules } = req.body;
-
-    // -----------------------------
-    // Normalize productRules
-    // -----------------------------
-    if (productRules) {
-      // Ensure type exists
-      productRules.type = productRules.type || "ALL_PRODUCTS";
-
-      // Initialize categories and brands arrays
-      productRules.categories = Array.isArray(productRules.categories)
-        ? productRules.categories.map((c) => c.trim())
-        : [];
-      productRules.brands = Array.isArray(productRules.brands)
-        ? productRules.brands.map((b) => b.trim())
-        : [];
-
-      // Convert empty strings to remove
-      productRules.categories = productRules.categories.filter(Boolean);
-      productRules.brands = productRules.brands.filter(Boolean);
-
-      // Ensure ALL_PRODUCTS type clears categories/brands
-      if (productRules.type === "ALL_PRODUCTS") {
-        productRules.categories = [];
-        productRules.brands = [];
-      }
-    }
-
-    // -----------------------------
-    // Create coupon
-    // -----------------------------
-    const newCoupon = await Coupon.create({
-      ...req.body,
-      productRules,
-    });
-
-    // -----------------------------
-    // SEND NOTIFICATIONS IF ACTIVE
-    // -----------------------------
-    if (newCoupon.status === "ACTIVE") {
-      let userQuery = { isActive: true, isBlocked: false };
-      const targeting = newCoupon.targeting || {};
-      const type = targeting.type || "ALL";
-
-      switch (type) {
-        case "ALL":
-          break;
-        case "GEOGRAPHIC":
-          if (targeting.geographic?.cities?.length)
-            userQuery.city = { $in: targeting.geographic.cities };
-          if (targeting.geographic?.areas?.length)
-            userQuery.area = { $in: targeting.geographic.areas };
-          break;
-        case "INDIVIDUAL":
-          if (targeting.users?.length) userQuery._id = { $in: targeting.users };
-          else userQuery._id = null;
-          break;
-        case "PURCHASE_HISTORY":
-          const usersWithPurchase = await Purchase.distinct("userId");
-          userQuery._id = { $in: usersWithPurchase };
-          break;
-        case "REFERRAL":
-          userQuery.referredBy = { $exists: true, $ne: null };
-          break;
-        default:
-          userQuery._id = null;
-      }
-
-      const targetUsers = await User.find(userQuery).select("_id");
-      const userIds = targetUsers.map((u) => u._id);
-
-      if (userIds.length > 0) {
-        await sendBulkNotifications(userIds, "User", {
-          title: "New Offer for You! 🎁",
-          body: `Use code ${newCoupon.code} to get ₹${newCoupon.value} off.`,
-          category: "COUPON",
-          targetScreen: "COUPON_DETAILS",
-          targetId: newCoupon._id.toString(),
-          channels: ["PUSH"],
-        });
-      }
-    }
-
-    return res.status(201).json({
-      success: true,
-      data: newCoupon,
-      message: "Coupon created successfully",
-    });
-  } catch (err) {
-    next(err);
-  }
-};
-
-export const createCoupon4 = async (req, res, next) => {
-  try {
-    let { productRules, notification } = req.body;
-
-    // -----------------------------
-    // Normalize productRules
-    // -----------------------------
-    if (productRules) {
-      productRules.type = productRules.type || "ALL_PRODUCTS";
-      productRules.categories = Array.isArray(productRules.categories)
-        ? productRules.categories.map((c) => c.trim())
-        : [];
-      productRules.brands = Array.isArray(productRules.brands)
-        ? productRules.brands.map((b) => b.trim())
-        : [];
-
-      productRules.categories = productRules.categories.filter(Boolean);
-      productRules.brands = productRules.brands.filter(Boolean);
-
-      if (productRules.type === "ALL_PRODUCTS") {
-        productRules.categories = [];
-        productRules.brands = [];
-      }
-    }
-
-    // -----------------------------
-    // Create coupon
-    // -----------------------------
-    const newCoupon = await Coupon.create({
-      ...req.body,
-      productRules,
-    });
-
-    // -----------------------------
-    // SEND NOTIFICATIONS IF ACTIVE
-    // -----------------------------
-    if (newCoupon.status === "ACTIVE") {
-      let userQuery = { isActive: true, isBlocked: false };
-      const targeting = newCoupon.targeting || {};
-      const type = targeting.type || "ALL";
-
-      switch (type) {
-        case "ALL":
-          break;
-        case "GEOGRAPHIC":
-          if (targeting.geographic?.cities?.length)
-            userQuery.city = { $in: targeting.geographic.cities };
-          if (targeting.geographic?.areas?.length)
-            userQuery.area = { $in: targeting.geographic.areas };
-          break;
-        case "INDIVIDUAL":
-          if (targeting.users?.length) userQuery._id = { $in: targeting.users };
-          else userQuery._id = null;
-          break;
-        case "PURCHASE_HISTORY":
-          const usersWithPurchase = await Purchase.distinct("userId");
-          userQuery._id = { $in: usersWithPurchase };
-          break;
-        case "REFERRAL":
-          userQuery.referredBy = { $exists: true, $ne: null };
-          break;
-        default:
-          userQuery._id = null;
-      }
-
-      const targetUsers = await User.find(userQuery).select("_id");
-      const userIds = targetUsers.map((u) => u._id);
-
-      if (userIds.length > 0) {
-        // -----------------------------
-        // Dynamic notification content
-        // -----------------------------
-        const notifTitle = notification?.title || `New Offer for You! 🎁`;
-        const notifBody =
-          notification?.body ||
-          `Use code ${newCoupon.code} to get ${
-            newCoupon.type === "PERCENTAGE"
-              ? `${newCoupon.value}% off`
-              : `₹${newCoupon.value} off`
-          }`;
-
-        await sendBulkNotifications(userIds, "User", {
-          title: notifTitle,
-          body: notifBody,
-          category: "COUPON",
-          targetScreen: "COUPON_DETAILS",
-          targetId: newCoupon._id.toString(),
-          channels: ["PUSH"],
-        });
-      }
-    }
-
-    return res.status(201).json({
-      success: true,
-      data: newCoupon,
-      message: "Coupon created successfully",
-    });
-  } catch (err) {
-    next(err);
-  }
-};
-
-export const createCoupon = async (req, res, next) => {
-  try {
-    let {
-      title,
-      code,
-      type,
-      value,
-      validFrom,
-      validUntil,
-      productRules,
-      notification,
-      targeting,
-      minPurchaseAmount,
-    } = req.body;
-
-    // 1. MANDATORY FIELD VALIDATION (Server-Side)
-    if (!title || !code || !type || value === undefined || !validUntil) {
-      return res.status(400).json({
-        success: false,
-        message:
-          "Missing mandatory fields: Title, Code, Type, Value, and Expiry Date are required.",
-      });
-    }
-
-    // 2. LOGICAL VALIDATION
-    if (type === "PERCENTAGE" && (value <= 0 || value > 100)) {
-      return res
-        .status(400)
-        .json({
-          success: false,
-          message: "Percentage value must be between 1 and 100.",
-        });
-    }
-    if (type === "FIXED_AMOUNT" && value <= 0) {
-      return res
-        .status(400)
-        .json({
-          success: false,
-          message: "Fixed amount must be greater than 0.",
-        });
-    }
-
-    // 3. DATE VALIDATION
-    const startDate = new Date(validFrom || Date.now());
-    const expiryDate = new Date(validUntil);
-    if (expiryDate <= startDate) {
-      return res
-        .status(400)
-        .json({
-          success: false,
-          message: "Expiry date must be after the start date.",
-        });
-    }
-
-    // 4. DUPLICATE CODE CHECK
-    const existingCoupon = await Coupon.findOne({
-      code: code.toUpperCase().trim(),
-      status: "ACTIVE",
-    });
-    if (existingCoupon) {
-      return res
-        .status(400)
-        .json({
-          success: false,
-          message: "An active coupon with this code already exists.",
-        });
-    }
-
-    // 5. DATA NORMALIZATION (Sanitizing Input)
-    const normalizedCode = code.toUpperCase().trim();
-
-    // Sanitize Product Rules
-    if (productRules) {
-      const pType = productRules.type || "ALL_PRODUCTS";
-      productRules.categories =
-        pType === "CATEGORY" ? productRules.categories || [] : [];
-      productRules.brands = pType === "BRAND" ? productRules.brands || [] : [];
-    }
-
-    // 6. RESOLVE TARGETING (CSV Mobiles)
-    if (targeting?.type === "INDIVIDUAL" && targeting?.csvMobiles?.length > 0) {
-      // Basic check to ensure we aren't processing a million numbers at once
-      if (targeting.csvMobiles.length > 5000) {
-        return res
-          .status(400)
-          .json({
-            success: false,
-            message: "CSV limit exceeded. Max 5000 users per campaign.",
-          });
-      }
-
-      const users = await User.find({
-        mobile: { $in: targeting.csvMobiles },
-        isActive: true,
-      }).select("_id");
-
-      targeting.users = users.map((u) => u._id);
-    }
-
-    // 7. PERSIST TO DATABASE
-    const newCoupon = await Coupon.create({
-      ...req.body,
-      code: normalizedCode,
-      productRules,
-      targeting,
-      // Ensure numbers are actually numbers
-      value: Number(value),
-      minPurchaseAmount: Number(minPurchaseAmount || 0),
-      maxDiscountAmount: Number(req.body.maxDiscountAmount || 0),
-      maxRedemptions: Number(req.body.maxRedemptions || 0),
-    });
-
-    // 8. NOTIFICATION LOGIC (Placeholder replacement)
-    if (newCoupon.status === "ACTIVE") {
-      let userQuery = { isActive: true, isBlocked: false };
-
-      // Building User Query
-      if (targeting?.type === "GEOGRAPHIC") {
-        if (targeting.geographic?.cities?.length)
-          userQuery.city = { $in: targeting.geographic.cities };
-        if (targeting.geographic?.areas?.length)
-          userQuery.area = { $in: targeting.geographic.areas };
-      } else if (targeting?.type === "INDIVIDUAL") {
-        userQuery._id = { $in: targeting.users || [] };
-      }
-
-      const targetUsers = await User.find(userQuery).select("_id");
-      const userIds = targetUsers.map((u) => u._id);
-
-      if (userIds.length > 0) {
-        const displayValue = type === "PERCENTAGE" ? `${value}%` : `₹${value}`;
-
-        // Use custom body or fallback
-        let notifBody =
-          notification?.body || "New offer! Use code {code} for {value} off.";
-        notifBody = notifBody
-          .replace(/{code}/g, newCoupon.code)
-          .replace(/{value}/g, displayValue);
-
-        await sendBulkNotifications(userIds, "User", {
-          title: notification?.title || "Limited Time Offer! 🎁",
-          body: notifBody,
-          category: "COUPON",
-          targetScreen: "COUPON_DETAILS",
-          targetId: newCoupon._id.toString(),
-          channels: ["PUSH"],
-        });
-      }
-    }
-
-    return res.status(201).json({
-      success: true,
-      data: newCoupon,
-      message: "Coupon validated, created, and notifications dispatched.",
-    });
-  } catch (err) {
-    // Handle Mongoose Validation Errors specifically
-    if (err.name === "ValidationError") {
-      return res.status(400).json({ success: false, message: err.message });
-    }
     next(err);
   }
 };
@@ -675,6 +448,114 @@ export const getCouponById = async (req, res, next) => {
 // @desc    Claim/Assign coupon to user
 // @route   POST /api/coupons/:id/claim
 // @access  Private
+export const claimCoupon3 = async (req, res, next) => {
+  try {
+    const { id } = req.params;
+    const userId = req.user.id;
+
+    // 1. Initial Fetch to check basic status (Non-atomic checks first to save performance)
+    const coupon = await Coupon.findById(id);
+
+    if (!coupon) {
+      return res
+        .status(404)
+        .json({ success: false, error: "Coupon not found" });
+    }
+
+    // Check basic status and expiry
+    if (coupon.status !== "ACTIVE") {
+      return res
+        .status(400)
+        .json({ success: false, error: "Coupon is not active" });
+    }
+
+    if (new Date() > coupon.validUntil) {
+      return res
+        .status(400)
+        .json({ success: false, error: "Coupon has expired" });
+    }
+
+    // 2. Check if user already claimed it (Prevent duplicates)
+    const existingUserCoupon = await UserCoupon.findOne({
+      userId: userId,
+      couponId: id,
+      status: { $in: ["ACTIVE", "USED"] },
+    });
+
+    if (existingUserCoupon) {
+      return res.status(400).json({
+        success: false,
+        error: "You already have this coupon",
+        userCoupon: existingUserCoupon,
+      });
+    }
+
+    // 3. Check user eligibility (City, Area, Category logic)
+    const user = await User.findById(userId);
+    const eligibility = await isUserEligibleForCoupon(user, coupon);
+
+    if (!eligibility.eligible) {
+      return res.status(400).json({
+        success: false,
+        error: eligibility.reasons.join(", "),
+      });
+    }
+
+    // 4. ATOMIC OPERATION: Increment and Check Limit simultaneously
+    // This is the "Gold Standard" for high-traffic apps
+    const updatedCoupon = await Coupon.findOneAndUpdate(
+      {
+        _id: id,
+        currentRedemptions: { $lt: coupon.maxRedemptions },
+        status: "ACTIVE", // Ensure it didn't get deactivated mid-process
+      },
+      { $inc: { currentRedemptions: 1 } },
+      { new: true },
+    );
+
+    if (!updatedCoupon) {
+      return res.status(400).json({
+        success: false,
+        error: "Coupon limit reached or offer no longer available!",
+      });
+    }
+
+    // 5. Create the User-Specific Coupon entry
+    const userCoupon = new UserCoupon({
+      userId: userId,
+      couponId: id,
+      validFrom: updatedCoupon.validFrom,
+      validUntil: updatedCoupon.validUntil,
+      // uniqueCode is usually generated automatically in UserCoupon schema
+    });
+
+    await userCoupon.save();
+
+    // 6. Send notification (Async, don't block the response)
+    sendPushNotification(
+      userId,
+      "Coupon Claimed!",
+      `You have successfully claimed "${updatedCoupon.title}". Check your wallet to use it.`,
+    ).catch((err) => console.log("Notification Error:", err));
+
+    // 7. Success Response
+    res.status(200).json({
+      success: true,
+      message: "Coupon claimed successfully",
+      // Include the coupon object so Redux can update the 'Master' state
+      coupon: updatedCoupon,
+      userCoupon: {
+        id: userCoupon._id,
+        uniqueCode: userCoupon.uniqueCode,
+        qrCodeImage: userCoupon.qrCodeImage,
+        validUntil: userCoupon.validUntil,
+        status: userCoupon.status,
+      },
+    });
+  } catch (error) {
+    next(error);
+  }
+};
 
 export const claimCoupon = async (req, res, next) => {
   try {
@@ -858,58 +739,6 @@ export const validateCoupon = async (req, res, next) => {
   }
 };
 
-export const getCouponProductRulesOptions = async (req, res, next) => {
-  try {
-    const categories = await Coupon.distinct("productRules.categories");
-    const brands = await Coupon.distinct("productRules.brands");
-
-    res.status(200).json({
-      success: true,
-      categories: categories.filter(Boolean), // remove empty/null
-      brands: brands.filter(Boolean),
-    });
-  } catch (err) {
-    next(err);
-  }
-};
-
-// controllers/couponController.js
-// import Coupon from '../models/Coupon.js';
-
-/**
- * Fetch dynamic categories and brands from existing coupons
- */
-export const getDynamicOptions = async (req, res, next) => {
-  try {
-    // Fetch all coupons
-    const coupons = await Coupon.find({}, "productRules");
-
-    const categoriesSet = new Set();
-    const brandsSet = new Set();
-
-    // Aggregate categories and brands
-    coupons.forEach((coupon) => {
-      const rules = coupon.productRules || {};
-      if (Array.isArray(rules.categories)) {
-        rules.categories.forEach((cat) => categoriesSet.add(cat));
-      }
-      if (Array.isArray(rules.brands)) {
-        rules.brands.forEach((brand) => brandsSet.add(brand));
-      }
-    });
-
-    return res.json({
-      success: true,
-      dynamicOptions: {
-        categories: Array.from(categoriesSet),
-        brands: Array.from(brandsSet),
-      },
-    });
-  } catch (err) {
-    next(err);
-  }
-};
-
 // import UserCoupon from "../models/UserCoupon.model.js";
 // import Purchase from "../models/Purchase.model.js"; // To link the sale
 
@@ -945,6 +774,119 @@ export const validateForStaff = async (req, res, next) => {
 // @desc    Redeem coupon (for store staff)
 // @route   POST /api/coupons/redeem
 // @access  Private (Store staff)
+export const redeemCoupon1 = async (req, res, next) => {
+  try {
+    const {
+      userCouponId,
+      storeId,
+      staffId,
+      purchaseId,
+      amountUsed,
+      notes = "",
+    } = req.body;
+
+    if (!userCouponId || !storeId || !staffId || !purchaseId || !amountUsed) {
+      return res.status(400).json({
+        success: false,
+        error: "Please provide all required fields",
+      });
+    }
+
+    const userCoupon = await UserCoupon.findById(userCouponId)
+      .populate("userId", "name mobile")
+      .populate("couponId", "code title");
+
+    if (!userCoupon) {
+      return res.status(404).json({
+        success: false,
+        error: "Coupon not found",
+      });
+    }
+
+    // Redeem the coupon
+    await userCoupon.redeem(storeId, staffId, purchaseId, amountUsed, notes);
+
+    // Send confirmation to user
+    await sendSMS(
+      userCoupon.userId.mobile,
+      `Your coupon "${userCoupon.couponId.title}" has been redeemed for ₹${amountUsed} at RK Electronics. Thank you for shopping with us!`,
+    );
+
+    res.status(200).json({
+      success: true,
+      message: "Coupon redeemed successfully",
+      redemption: {
+        userCouponId: userCoupon._id,
+        userId: userCoupon.userId._id,
+        userName: userCoupon.userId.name,
+        couponCode: userCoupon.couponId.code,
+        amountUsed,
+        redeemedAt: new Date(),
+      },
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+export const redeemCoupon2 = async (req, res, next) => {
+  try {
+    const staffId = req.user.id; // From auth middleware
+    console.log("staffId", staffId);
+    console.log("req.user.storeId", req.user.storeId);
+    const { uniqueCode, orderAmount, purchaseId, notes } = req.body;
+    let storeId = req.user.storeId;
+
+    // 1. Find the UserCoupon and the Master Coupon details
+    const userCoupon = await UserCoupon.findOne({ uniqueCode }).populate(
+      "couponId",
+    );
+
+    if (!userCoupon) {
+      return res
+        .status(404)
+        .json({ success: false, error: "Coupon not found" });
+    }
+
+    // 2. Calculate the "amountUsed" (the actual savings)
+    const master = userCoupon.couponId;
+    let savings = 0;
+
+    if (master.type === "PERCENTAGE") {
+      savings = (orderAmount * master.value) / 100;
+      // Apply cap if exists
+      if (master.maxDiscountAmount && savings > master.maxDiscountAmount) {
+        savings = master.maxDiscountAmount;
+      }
+    } else {
+      // FLAT discount
+      savings = master.value;
+    }
+
+    // 3. Use your schema method to handle the heavy lifting
+    // This updates status to 'USED', increments Master count, and saves
+    await userCoupon.redeem(
+      storeId,
+      staffId,
+      purchaseId,
+      savings, // This maps to 'amountUsed' in your schema
+      notes,
+    );
+
+    res.status(200).json({
+      success: true,
+      message: "Redemption successful",
+      data: {
+        savingsAmount: savings,
+        finalBill: orderAmount - savings,
+        uniqueCode: userCoupon.uniqueCode,
+      },
+    });
+  } catch (error) {
+    // If your schema method throws "Coupon has expired", it lands here
+    res.status(400).json({ success: false, error: error.message });
+  }
+};
 
 export const redeemCoupon = async (req, res, next) => {
   try {
@@ -971,10 +913,12 @@ export const redeemCoupon = async (req, res, next) => {
 
     // 2. Validation: Is it already used?
     if (userCoupon.status === "USED") {
-      return res.status(400).json({
-        success: false,
-        error: "This coupon has already been redeemed",
-      });
+      return res
+        .status(400)
+        .json({
+          success: false,
+          error: "This coupon has already been redeemed",
+        });
     }
 
     const master = userCoupon.couponId;
@@ -1022,6 +966,71 @@ export const redeemCoupon = async (req, res, next) => {
 // @desc    Get coupon redemption history
 // @route   GET /api/coupons/:id/redemptions
 // @access  Private (Admin)
+export const getRedemptionHistory1 = async (req, res, next) => {
+  try {
+    const coupon = await Coupon.findById(req.params.id);
+
+    if (!coupon) {
+      return res.status(404).json({
+        success: false,
+        error: "Coupon not found",
+      });
+    }
+
+    const { page = 1, limit = 20, startDate, endDate } = req.query;
+    const skip = (page - 1) * limit;
+
+    const query = { couponId: coupon._id, status: "USED" };
+
+    if (startDate || endDate) {
+      query["redemption.redeemedAt"] = {};
+      if (startDate) query["redemption.redeemedAt"].$gte = new Date(startDate);
+      if (endDate) query["redemption.redeemedAt"].$lte = new Date(endDate);
+    }
+
+    const userCoupons = await UserCoupon.find(query)
+      .populate("userId", "name mobile city area")
+      .populate("redemption.storeId", "name location.city location.area")
+      .sort({ "redemption.redeemedAt": -1 })
+      .skip(skip)
+      .limit(parseInt(limit));
+
+    const total = await UserCoupon.countDocuments(query);
+
+    // Calculate redemption stats
+    const redemptionStats = {
+      totalRedemptions: coupon.currentRedemptions,
+      maxRedemptions: coupon.maxRedemptions,
+      remainingRedemptions: coupon.maxRedemptions - coupon.currentRedemptions,
+      redemptionRate: Math.round(
+        (coupon.currentRedemptions / coupon.maxRedemptions) * 100,
+      ),
+    };
+
+    res.status(200).json({
+      success: true,
+      coupon: {
+        code: coupon.code,
+        title: coupon.title,
+        value: coupon.value,
+      },
+      stats: redemptionStats,
+      redemptions: userCoupons.map((uc) => ({
+        user: uc.userId,
+        store: uc.redemption.storeId,
+        amountUsed: uc.redemption.amountUsed,
+        redeemedAt: uc.redemption.redeemedAt,
+        staffId: uc.redemption.staffId,
+      })),
+      count: userCoupons.length,
+      total,
+      pages: Math.ceil(total / limit),
+      currentPage: page,
+    });
+  } catch (error) {
+    next(error);
+  }
+};
 
 export const getRedemptionHistory = async (req, res, next) => {
   try {
@@ -1285,3 +1294,8 @@ export const getMyCouponSavings = async (req, res, next) => {
     next(error);
   }
 };
+
+// getMyActiveCoupons
+// getDiscoverableCoupons
+// getMyCouponHistory
+// getMyCouponSavings
