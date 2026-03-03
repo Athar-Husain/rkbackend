@@ -10,25 +10,28 @@ const promotionSchema = new mongoose.Schema(
       required: [true, "Promotion title is required"],
       trim: true,
     },
-    description: {
-      type: String,
-      trim: true,
-    },
-    shortDescription: {
-      type: String,
-      trim: true,
-    },
+    description: String,
+    shortDescription: String,
 
-    bannerImage: {
+    bannerImage: String,
+    thumbnailImage: String,
+
+    /* =========================
+       PROMOTION TYPE
+    ========================= */
+    type: {
       type: String,
+      enum: ["DISCOUNT", "BOGO", "FREE_ITEM", "CASHBACK", "REWARD_POINTS"],
       required: true,
-      trim: true,
     },
 
-    thumbnailImage: {
-      type: String,
-      trim: true,
+    value: {
+      type: Number,
+      // required: true,
+      min: 0,
     },
+    maxValue: Number,
+    minValue: Number,
 
     /* =========================
        TARGETING
@@ -62,53 +65,36 @@ const promotionSchema = new mongoose.Schema(
       ],
 
       products: [{ type: mongoose.Schema.Types.ObjectId, ref: "Product" }],
-      categories: [{ type: String, trim: true }],
-      brands: [{ type: String, trim: true }],
+      categories: [String],
+      brands: [String],
     },
 
     /* =========================
        VALIDITY
     ========================= */
-    validFrom: {
-      type: Date,
-      required: true,
-    },
+    validFrom: { type: Date, required: true },
+    validUntil: { type: Date, required: true },
 
-    validUntil: {
-      type: Date,
-      required: true,
-    },
+    /* =========================
+       USAGE
+    ========================= */
+    maxRedemptions: { type: Number, default: 1000 },
+    currentRedemptions: { type: Number, default: 0 },
+    perUserLimit: { type: Number, default: 1 },
 
     /* =========================
        DISPLAY
     ========================= */
-    displayOrder: {
-      type: Number,
-      default: 0,
-    },
-
-    featured: {
-      type: Boolean,
-      default: false,
-    },
-
-    priority: {
-      type: Number,
-      default: 1,
-    },
+    displayOrder: { type: Number, default: 0 },
+    featured: { type: Boolean, default: false },
+    priority: { type: Number, default: 1 },
 
     /* =========================
        ANALYTICS
     ========================= */
-    impressions: {
-      type: Number,
-      default: 0,
-    },
-
-    clicks: {
-      type: Number,
-      default: 0,
-    },
+    impressions: { type: Number, default: 0 },
+    clicks: { type: Number, default: 0 },
+    redemptions: { type: Number, default: 0 },
 
     /* =========================
        STATUS
@@ -139,28 +125,21 @@ promotionSchema.index({ status: 1, validFrom: 1, validUntil: 1 });
 promotionSchema.index({ featured: 1 });
 promotionSchema.index({ priority: -1, displayOrder: 1 });
 promotionSchema.index({ "targeting.type": 1 });
-promotionSchema.index({ "targeting.users": 1 });
-promotionSchema.index({ "targeting.geographic.cities": 1 });
-promotionSchema.index({ "targeting.segments": 1 });
 
 /* =====================================================
    PRE SAVE
 ===================================================== */
 
-promotionSchema.pre("save", function (next) {
-  // Auto swap if dates are reversed
+promotionSchema.pre("save", function () {
   if (this.validFrom > this.validUntil) {
     const temp = this.validFrom;
     this.validFrom = this.validUntil;
     this.validUntil = temp;
   }
 
-  // Auto mark expired
-  if (this.validUntil < new Date()) {
+  if (this.status === "ACTIVE" && this.validUntil < new Date()) {
     this.status = "EXPIRED";
   }
-
-  next();
 });
 
 /* =====================================================
@@ -171,20 +150,35 @@ promotionSchema.virtual("isExpired").get(function () {
   return this.validUntil < new Date();
 });
 
-promotionSchema.virtual("isUpcoming").get(function () {
-  return this.validFrom > new Date();
-});
-
 promotionSchema.virtual("isActive").get(function () {
-  const now = new Date();
-
   return (
-    this.status === "ACTIVE" && this.validFrom <= now && this.validUntil >= now
+    this.status === "ACTIVE" &&
+    !this.isExpired &&
+    this.currentRedemptions < this.maxRedemptions
   );
 });
 
+promotionSchema.virtual("discountMessage").get(function () {
+  switch (this.type) {
+    case "DISCOUNT":
+      return this.value < 100
+        ? `Upto ${this.value}% off`
+        : `Upto ₹${this.value} off`;
+    case "BOGO":
+      return "Buy 1 Get 1 Free";
+    case "FREE_ITEM":
+      return "Free Item with Purchase";
+    case "CASHBACK":
+      return `Get ₹${this.value} cashback`;
+    case "REWARD_POINTS":
+      return `Earn ${this.value} reward points`;
+    default:
+      return "Special Offer";
+  }
+});
+
 /* =====================================================
-   METHODS (ANALYTICS ONLY)
+   METHODS
 ===================================================== */
 
 promotionSchema.methods.recordImpression = function () {
@@ -194,6 +188,13 @@ promotionSchema.methods.recordImpression = function () {
 
 promotionSchema.methods.recordClick = function () {
   this.clicks += 1;
+  return this.save();
+};
+
+promotionSchema.methods.recordRedemption = function () {
+  if (this.currentRedemptions >= this.maxRedemptions) return this;
+  this.redemptions += 1;
+  this.currentRedemptions += 1;
   return this.save();
 };
 
@@ -255,11 +256,10 @@ promotionSchema.statics.getActivePromotions = async function ({
     status: "ACTIVE",
     validFrom: { $lte: now },
     validUntil: { $gte: now },
+    $expr: { $lt: ["$currentRedemptions", "$maxRedemptions"] },
   };
 
-  if (featured) {
-    baseQuery.featured = true;
-  }
+  if (featured) baseQuery.featured = true;
 
   const targetingQuery = buildPromotionTargetingQuery(user);
 
@@ -283,5 +283,4 @@ promotionSchema.statics.getPromotionsForUser = function (user, options = {}) {
 };
 
 const Promotion = mongoose.model("Promotion", promotionSchema);
-
 export default Promotion;

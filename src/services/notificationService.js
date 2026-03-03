@@ -1,18 +1,11 @@
-// src/services/notificationService.js
 import admin from "firebase-admin";
-import nodemailer from "nodemailer";
-import twilio from "twilio";
 import { createRequire } from "module";
-
 import User from "../models/User.model.js";
 import Staff from "../models/Staff.model.js";
 import Admin from "../models/Admin.js";
 import NotificationLog from "../models/NotificationLog.model.js";
-// import NotificationLog from "../models/NotificationLog.js";
 
 const require = createRequire(import.meta.url);
-
-/* ================= INITIALIZATION ================= */
 
 let firebaseInitialized = false;
 let serviceAccount;
@@ -29,32 +22,11 @@ try {
       credential: admin.credential.cert(serviceAccount),
     });
   }
-
   firebaseInitialized = true;
   console.log("🔥 Firebase Initialized");
 } catch (err) {
   console.error("❌ Firebase Init Error:", err.message);
 }
-
-const twilioClient =
-  process.env.TWILIO_ACCOUNT_SID && process.env.TWILIO_AUTH_TOKEN
-    ? twilio(process.env.TWILIO_ACCOUNT_SID, process.env.TWILIO_AUTH_TOKEN)
-    : null;
-
-const emailTransporter =
-  process.env.EMAIL_HOST && process.env.EMAIL_USER
-    ? nodemailer.createTransport({
-        host: process.env.EMAIL_HOST,
-        port: process.env.EMAIL_PORT || 587,
-        secure: process.env.EMAIL_SECURE === "true",
-        auth: {
-          user: process.env.EMAIL_USER,
-          pass: process.env.EMAIL_PASS,
-        },
-      })
-    : null;
-
-/* ================= MODEL MAPPER ================= */
 
 const getModel = (userModel) => {
   const models = { User, Staff, Admin };
@@ -63,42 +35,39 @@ const getModel = (userModel) => {
   return Model;
 };
 
-/* ================= LOGGING ================= */
-
-const logNotification = async ({
-  userId,
-  userModel,
-  type,
-  title,
-  content,
-  category = "SYSTEM",
-  targetScreen,
-  targetId,
-  payload = {},
-  deliveryStatus = "SENT",
-  errorDetails,
-}) => {
+const logNotification = async (logData) => {
   try {
-    await NotificationLog.create({
-      userId,
-      userModel,
-      type,
-      title,
-      content,
-      category,
-      targetScreen,
-      targetId,
-      payload,
-      deliveryStatus,
-      errorDetails,
-    });
+    await NotificationLog.create(logData);
   } catch (err) {
     console.error("Notification Log Error:", err.message);
   }
 };
 
-/* ================= PUSH ================= */
+export const sendNotificationSMS = async (
+  userId,
+  userModel,
+  mobile,
+  message,
+) => {
+  if (!twilioClient) return { success: false };
+  try {
+    const sms = await twilioClient.messages.create({
+      body: message,
+      from: process.env.TWILIO_PHONE_NUMBER,
+      to: `+91${mobile}`,
+    });
 
+    await logNotification(userId, userModel, "SMS", "SMS Alert", message, {
+      sid: sms.sid,
+    });
+    return { success: true };
+  } catch (err) {
+    return { success: false };
+  }
+};
+/**
+ * Sends a push notification using DATA-ONLY payload to prevent duplicates.
+ */
 export const sendPushNotification = async (
   userId,
   userModel,
@@ -116,31 +85,41 @@ export const sendPushNotification = async (
       return { success: false, message: "No device tokens" };
 
     const tokens = user.deviceTokens.map((t) => t.token).filter(Boolean);
-    if (!tokens.length) return { success: false, message: "Invalid tokens" };
+    if (!tokens.length) return { success: false, message: "No valid tokens" };
 
+    // INDUSTRY STANDARD: Use "data" only. Do NOT use the "notification" key.
     const message = {
       tokens,
-      notification: { title, body },
-      data: Object.fromEntries(
-        Object.entries(navData).map(([k, v]) => [k, String(v)]),
-      ),
+      data: {
+        title: String(title),
+        body: String(body),
+        category: String(navData.category || "SYSTEM"),
+        targetScreen: String(navData.targetScreen || ""),
+        targetId: String(navData.targetId || ""),
+        image: String(navData.image || ""),
+      },
       android: {
         priority: "high",
-        notification: { sound: "default" },
       },
       apns: {
-        payload: { aps: { sound: "default", badge: 1 } },
+        payload: {
+          aps: {
+            contentAvailable: true,
+            badge: 1,
+          },
+        },
       },
     };
 
     const response = await admin.messaging().sendEachForMulticast(message);
 
+    // Clean up invalid tokens
     const invalidTokens = [];
-
     response.responses.forEach((r, index) => {
       if (
         !r.success &&
-        r.error?.code === "messaging/registration-token-not-registered"
+        (r.error?.code === "messaging/registration-token-not-registered" ||
+          r.error?.code === "messaging/invalid-registration-token")
       ) {
         invalidTokens.push(tokens[index]);
       }
@@ -149,11 +128,7 @@ export const sendPushNotification = async (
     if (invalidTokens.length) {
       await Model.updateOne(
         { _id: userId },
-        {
-          $pull: {
-            deviceTokens: { token: { $in: invalidTokens } },
-          },
-        },
+        { $pull: { deviceTokens: { token: { $in: invalidTokens } } } },
       );
     }
 
@@ -166,51 +141,16 @@ export const sendPushNotification = async (
       category: navData.category,
       targetScreen: navData.targetScreen,
       targetId: navData.targetId,
-      payload: navData.payload,
       deliveryStatus: response.successCount > 0 ? "DELIVERED" : "FAILED",
     });
 
-    return { success: true };
+    return { success: true, successCount: response.successCount };
   } catch (err) {
-    await logNotification({
-      userId,
-      userModel,
-      type: "PUSH",
-      title,
-      content: body,
-      deliveryStatus: "FAILED",
-      errorDetails: err.message,
-    });
-    return { success: false };
+    console.error("Push Error:", err.message);
+    return { success: false, error: err.message };
   }
 };
 
-/**
- * Send SMS and log
- */
-// export const sendSMS = async (userId, userModel, mobile, message) => {
-export const sendNotificationSMS  = async (userId, userModel, mobile, message) => {
-  if (!twilioClient) return { success: false };
-  try {
-    const sms = await twilioClient.messages.create({
-      body: message,
-      from: process.env.TWILIO_PHONE_NUMBER,
-      to: `+91${mobile}`,
-    });
-
-    await logNotification(userId, userModel, "SMS", "SMS Alert", message, {
-      sid: sms.sid,
-    });
-    return { success: true };
-  } catch (err) {
-    return { success: false };
-  }
-};
-
-/**
- * THE MASTER TRIGGER: Use this in your controllers!
- * channels: ['PUSH', 'SMS', 'EMAIL']
- */
 export const triggerNotification = async (recipientId, userModel, options) => {
   const {
     title,
@@ -218,12 +158,10 @@ export const triggerNotification = async (recipientId, userModel, options) => {
     category,
     targetScreen,
     targetId,
+    image,
     channels = ["PUSH"],
-    payload = {},
   } = options;
-
-  const navData = { category, targetScreen, targetId, payload };
-
+  const navData = { category, targetScreen, targetId, image };
   const results = [];
 
   if (channels.includes("PUSH")) {
@@ -231,107 +169,27 @@ export const triggerNotification = async (recipientId, userModel, options) => {
       await sendPushNotification(recipientId, userModel, title, body, navData),
     );
   }
-
-  // You can add logic for SMS/Email here using the same pattern
   return results;
 };
 
 /**
- * Unified Register Token
- */
-export const registerDeviceToken = async (
-  userId,
-  userModel,
-  token,
-  platform = "android",
-) => {
-  const Model = getModel(userModel);
-  const user = await Model.findById(userId);
-  if (!user) throw new Error("User not found");
-
-  const existingIndex = user.deviceTokens.findIndex((t) => t.token === token);
-  if (existingIndex !== -1) {
-    user.deviceTokens[existingIndex].platform = platform;
-    user.deviceTokens[existingIndex].lastUsed = new Date();
-  } else {
-    user.deviceTokens.push({ token, platform, lastUsed: new Date() });
-  }
-  await user.save();
-  return { success: true };
-};
-
-export const sendBulkNotifications1 = async (
-  userIds,
-  title,
-  body,
-  type = "PUSH",
-  data = {},
-) => {
-  const results = { total: userIds.length, success: 0, failed: 0, details: [] };
-
-  for (const userId of userIds) {
-    try {
-      const user = await User.findById(userId);
-      let result;
-      switch (type) {
-        case "PUSH":
-          result = await sendPushNotification(userId, title, body, data);
-          break;
-        case "SMS":
-          result =
-            user && user.mobile
-              ? await sendSMS(user.mobile, body)
-              : { success: false, message: "Mobile not found" };
-          break;
-        case "EMAIL":
-          result =
-            user && user.email
-              ? await sendEmail(user.email, title, body)
-              : { success: false, message: "Email not found" };
-          break;
-        default:
-          result = { success: false, message: "Invalid notification type" };
-      }
-      results.details.push({
-        userId,
-        success: result.success,
-        message: result.message || "Sent",
-      });
-      result.success ? results.success++ : results.failed++;
-    } catch (error) {
-      results.details.push({ userId, success: false, message: error.message });
-      results.failed++;
-    }
-  }
-  return results;
-};
-
-/**
- * Send notification to an array of users (Bulk)
- * @param {Array} userIds - Array of ObjectIds
- * @param {String} userModel - 'Admin', 'Staff', or 'User'
- * @param {Object} options - Notification content and metadata
+ * Bulk sending with chunking (500 tokens per batch) for scalability.
  */
 export const sendBulkNotifications = async (userIds, userModel, options) => {
-  const results = {
-    total: userIds.length,
-    success: 0,
-    failed: 0,
-  };
+  const results = { total: userIds.length, success: 0, failed: 0 };
+  const CHUNK_SIZE = 500;
 
-  // We use Promise.all to trigger all notifications in parallel for speed
-  const notifications = userIds.map((id) =>
-    triggerNotification(id, userModel, options),
-  );
+  for (let i = 0; i < userIds.length; i += CHUNK_SIZE) {
+    const chunk = userIds.slice(i, i + CHUNK_SIZE);
+    const chunkPromises = chunk.map((id) =>
+      triggerNotification(id, userModel, options),
+    );
+    const responses = await Promise.all(chunkPromises);
 
-  const responses = await Promise.all(notifications);
-
-  responses.forEach((res) => {
-    // Since triggerNotification returns an array of channel results
-    const isSuccess = res.some((r) => r.success === true);
-    if (isSuccess) results.success++;
-    else results.failed++;
-  });
-
+    responses.forEach((res) => {
+      if (res.some((r) => r.success)) results.success++;
+      else results.failed++;
+    });
+  }
   return results;
 };

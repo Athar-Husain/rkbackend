@@ -6,15 +6,18 @@ const couponSchema = new mongoose.Schema(
     // Basic Information
     code: {
       type: String,
-      required: true,
+      required: [true, "Coupon code is required"],
       unique: true,
       uppercase: true,
       trim: true,
     },
-    title: { type: String, required: true },
+    title: {
+      type: String,
+      required: [true, "Coupon title is required"],
+    },
     description: String,
 
-    // Notification Template
+    // Notification Template (Stored for auto-triggering new users)
     notification: {
       title: { type: String, default: "" },
       body: { type: String, default: "" },
@@ -26,9 +29,16 @@ const couponSchema = new mongoose.Schema(
       enum: ["FIXED_AMOUNT", "PERCENTAGE", "FREE_ITEM"],
       default: "FIXED_AMOUNT",
     },
-    value: { type: Number, required: true, min: 0 },
+    value: {
+      type: Number,
+      required: true,
+      min: 0,
+    },
     maxDiscountAmount: { type: Number, default: 0 },
-    minPurchaseAmount: { type: Number, default: 0 },
+    minPurchaseAmount: {
+      type: Number,
+      default: 0,
+    },
 
     // Targeting Rules
     targeting: {
@@ -43,13 +53,46 @@ const couponSchema = new mongoose.Schema(
         ],
         default: "ALL",
       },
+
       geographic: {
-        cities: [{ type: mongoose.Schema.Types.ObjectId, ref: "CityArea" }],
-        areas: [{ type: mongoose.Schema.Types.ObjectId }],
-        stores: [{ type: mongoose.Schema.Types.ObjectId, ref: "Store" }],
+        cities: [
+          {
+            type: mongoose.Schema.Types.ObjectId,
+            ref: "CityArea",
+          },
+        ],
+        areas: [
+          {
+            type: mongoose.Schema.Types.ObjectId,
+            // Note: No ref here because Areas are sub-documents in CityArea
+          },
+        ],
+        stores: [
+          {
+            type: mongoose.Schema.Types.ObjectId,
+            ref: "Store",
+          },
+        ],
       },
-      users: [{ type: mongoose.Schema.Types.ObjectId, ref: "User" }],
-      csvMobiles: [String],
+      // geographic: {
+      //   cities: [String],
+      //   areas: [String],
+      //   stores: [
+      //     {
+      //       type: mongoose.Schema.Types.ObjectId,
+      //       ref: "Store",
+      //     },
+      //   ],
+      // },
+
+      users: [
+        {
+          type: mongoose.Schema.Types.ObjectId,
+          ref: "User",
+        },
+      ],
+      csvMobiles: [String], // Storing raw list for audit
+
       purchaseHistory: {
         minPurchases: { type: Number, default: 0 },
         categories: [String],
@@ -59,6 +102,7 @@ const couponSchema = new mongoose.Schema(
           enum: ["LAST_7_DAYS", "LAST_30_DAYS", "LAST_90_DAYS", "ALL_TIME"],
         },
       },
+
       segments: [
         {
           type: String,
@@ -79,14 +123,34 @@ const couponSchema = new mongoose.Schema(
         enum: ["ALL_PRODUCTS", "CATEGORY", "PRODUCT", "BRAND"],
         default: "ALL_PRODUCTS",
       },
-      categories: [{ type: String, uppercase: true, trim: true }],
-      brands: [{ type: String, uppercase: true, trim: true }],
-      products: [{ type: mongoose.Schema.Types.ObjectId, ref: "Product" }],
+      categories: [
+        {
+          type: String,
+          uppercase: true,
+          trim: true,
+        },
+      ],
+      brands: [
+        {
+          type: String,
+          uppercase: true,
+          trim: true,
+        },
+      ],
+      products: [
+        {
+          type: mongoose.Schema.Types.ObjectId,
+          ref: "Product",
+        },
+      ],
     },
 
     // Validity
-    validFrom: { type: Date, required: true },
-    neverExpires: { type: Boolean, default: false },
+    validFrom: {
+      type: Date,
+      required: true,
+    },
+
     validUntil: {
       type: Date,
       required: function () {
@@ -95,7 +159,10 @@ const couponSchema = new mongoose.Schema(
       default: null,
     },
 
-    // Redemption limits
+    neverExpires: {
+      type: Boolean,
+      default: false,
+    },
     maxRedemptions: { type: Number, default: 1000 },
     currentRedemptions: { type: Number, default: 0 },
     perUserLimit: { type: Number, default: 1 },
@@ -111,8 +178,11 @@ const couponSchema = new mongoose.Schema(
       default: "DRAFT",
     },
 
-    // Audit (optional but recommended)
-    createdBy: { type: mongoose.Schema.Types.ObjectId, ref: "User" },
+    // Metadata
+    // createdBy: {
+    //   type: mongoose.Schema.Types.ObjectId,
+    //   ref: "User",
+    // },
   },
   {
     timestamps: true,
@@ -122,23 +192,20 @@ const couponSchema = new mongoose.Schema(
 );
 
 /* =========================
-   INDEXES
+   PRE SAVE (NO next())
 ========================= */
-couponSchema.index({ status: 1, validUntil: 1 });
-couponSchema.index({ neverExpires: 1 });
-// couponSchema.index({ code: 1 }, { unique: true });
-
-/* =========================
-   PRE SAVE
-========================= */
-couponSchema.pre("save", function () {
-  // Auto-generate manual code if missing
+couponSchema.pre("save", async function () {
   if (!this.manualCode) {
-    this.manualCode = `RK-${this.code}-${Math.floor(100 + Math.random() * 900)}`;
+    this.manualCode = `RK-${this.code}-${Math.floor(
+      100 + Math.random() * 900,
+    )}`;
   }
 
-  // Auto-expire if past validUntil
-  if (!this.neverExpires && this.validUntil && this.validUntil < new Date()) {
+  if (
+    this.validUntil &&
+    this.validUntil < new Date() &&
+    this.status === "ACTIVE"
+  ) {
     this.status = "EXPIRED";
   }
 });
@@ -147,17 +214,14 @@ couponSchema.pre("save", function () {
    VIRTUALS
 ========================= */
 couponSchema.virtual("isExpired").get(function () {
-  if (this.neverExpires) return false;
-  if (!this.validUntil) return false;
-  return this.validUntil < Date.now();
+  return this.validUntil < new Date();
 });
 
 couponSchema.virtual("isActive").get(function () {
   return (
     this.status === "ACTIVE" &&
     !this.isExpired &&
-    this.currentRedemptions < this.maxRedemptions &&
-    this.validFrom <= Date.now()
+    this.currentRedemptions < this.maxRedemptions
   );
 });
 
@@ -171,49 +235,34 @@ couponSchema.methods.calculateDiscount = function (purchaseAmount) {
     discount = Math.min(this.value, purchaseAmount);
   } else if (this.type === "PERCENTAGE") {
     discount = (purchaseAmount * this.value) / 100;
-    if (this.maxDiscountAmount)
-      discount = Math.min(discount, this.maxDiscountAmount);
+    if (this.maxDiscount) {
+      discount = Math.min(discount, this.maxDiscount);
+    }
   }
 
   return Math.round(discount);
 };
 
 /* =========================
-   STATIC METHODS
+   STATICS
 ========================= */
 couponSchema.statics.findForUser = async function (userId, options = {}) {
+  // const User = mongoose.model("User");
   const user = await User.findById(userId);
   if (!user) return [];
 
-  const now = new Date();
-
   const query = {
     status: "ACTIVE",
-    validFrom: { $lte: now },
+    validFrom: { $lte: new Date() },
+    validUntil: { $gte: new Date() },
     $expr: { $lt: ["$currentRedemptions", "$maxRedemptions"] },
-    $or: [{ neverExpires: true }, { validUntil: { $gte: now } }],
   };
 
-  if (options.targetingType) query["targeting.type"] = options.targetingType;
+  if (options.targetingType) {
+    query["targeting.type"] = options.targetingType;
+  }
 
   return this.find(query);
-};
-
-/* =========================
-   STATIC HELPER: EXPIRE COUPONS
-   (Run in a cron job / script)
-========================= */
-couponSchema.statics.expireCoupons = async function () {
-  const now = new Date();
-  const result = await this.updateMany(
-    {
-      neverExpires: false,
-      validUntil: { $lt: now },
-      status: { $ne: "EXPIRED" },
-    },
-    { $set: { status: "EXPIRED" } },
-  );
-  return result.modifiedCount;
 };
 
 const Coupon = mongoose.model("Coupon", couponSchema);

@@ -18,6 +18,370 @@ import Purchase from "../models/Purchase.model.js";
  */
 export const createCoupon1 = async (req, res, next) => {
   try {
+    const newCoupon = await Coupon.create(req.body);
+
+    /* --------------------------------------------------
+       SEND NOTIFICATIONS ONLY IF ACTIVE
+    -------------------------------------------------- */
+    if (newCoupon.status === "ACTIVE") {
+      let userQuery = { isActive: true, isBlocked: false };
+
+      const targeting = newCoupon.targeting || {};
+      const type = targeting.type || "ALL";
+
+      switch (type) {
+        /* ---------------- ALL USERS ---------------- */
+        case "ALL":
+          break;
+
+        /* ---------------- GEOGRAPHIC ---------------- */
+        case "GEOGRAPHIC":
+          if (targeting.geographic?.cities?.length) {
+            userQuery.city = { $in: targeting.geographic.cities };
+          }
+          if (targeting.geographic?.areas?.length) {
+            userQuery.area = { $in: targeting.geographic.areas };
+          }
+          break;
+
+        /* ---------------- INDIVIDUAL ---------------- */
+        case "INDIVIDUAL":
+          if (targeting.users?.length) {
+            userQuery._id = { $in: targeting.users };
+          } else {
+            userQuery._id = null; // No users to notify
+          }
+          break;
+
+        /* ---------------- PURCHASE_HISTORY ---------------- */
+        case "PURCHASE_HISTORY":
+          const usersWithPurchase = await Purchase.distinct("userId");
+          userQuery._id = { $in: usersWithPurchase };
+          break;
+
+        /* ---------------- REFERRAL ---------------- */
+        case "REFERRAL":
+          userQuery.referredBy = { $exists: true, $ne: null };
+          break;
+
+        default:
+          userQuery._id = null;
+      }
+
+      const targetUsers = await User.find(userQuery).select("_id");
+      const userIds = targetUsers.map((u) => u._id);
+
+      if (userIds.length > 0) {
+        await sendBulkNotifications(userIds, "User", {
+          title: "New Offer for You! 🎁",
+          body: `Use code ${newCoupon.code} to get ₹${newCoupon.value} off.`,
+          category: "COUPON",
+          targetScreen: "COUPON_DETAILS",
+          targetId: newCoupon._id.toString(),
+          channels: ["PUSH"],
+        });
+      }
+    }
+
+    return res.status(201).json({
+      success: true,
+      data: newCoupon,
+      message: "Coupon created successfully",
+    });
+  } catch (err) {
+    next(err);
+  }
+};
+
+export const createCoupon2 = async (req, res, next) => {
+  try {
+    const { productRules = {} } = req.body;
+
+    // --------------------------
+    // Upsert new categories/brands from this coupon
+    // --------------------------
+    const existingCoupons = await Coupon.find({}, { productRules: 1 });
+
+    const allCategories = new Set();
+    const allBrands = new Set();
+
+    existingCoupons.forEach((c) => {
+      if (c.productRules?.categories?.length)
+        c.productRules.categories.forEach((cat) => allCategories.add(cat));
+      if (c.productRules?.brands?.length)
+        c.productRules.brands.forEach((brand) => allBrands.add(brand));
+    });
+
+    // Add current coupon entries
+    if (productRules?.categories?.length)
+      productRules.categories.forEach((cat) => allCategories.add(cat));
+    if (productRules?.brands?.length)
+      productRules.brands.forEach((brand) => allBrands.add(brand));
+
+    // Save new coupon
+    const newCoupon = await Coupon.create(req.body);
+
+    // --------------------------
+    // SEND NOTIFICATIONS ONLY IF ACTIVE
+    // --------------------------
+    if (newCoupon.status === "ACTIVE") {
+      let userQuery = { isActive: true, isBlocked: false };
+      const targeting = newCoupon.targeting || {};
+      const type = targeting.type || "ALL";
+
+      switch (type) {
+        case "ALL":
+          break;
+        case "GEOGRAPHIC":
+          if (targeting.geographic?.cities?.length)
+            userQuery.city = { $in: targeting.geographic.cities };
+          if (targeting.geographic?.areas?.length)
+            userQuery.area = { $in: targeting.geographic.areas };
+          break;
+        case "INDIVIDUAL":
+          userQuery._id = targeting.users?.length
+            ? { $in: targeting.users }
+            : null;
+          break;
+        case "PURCHASE_HISTORY":
+          const usersWithPurchase = await Purchase.distinct("userId");
+          userQuery._id = { $in: usersWithPurchase };
+          break;
+        case "REFERRAL":
+          userQuery.referredBy = { $exists: true, $ne: null };
+          break;
+        default:
+          userQuery._id = null;
+      }
+
+      const targetUsers = await User.find(userQuery).select("_id");
+      const userIds = targetUsers.map((u) => u._id);
+
+      if (userIds.length > 0) {
+        await sendBulkNotifications(userIds, "User", {
+          title: "New Offer for You! 🎁",
+          body: `Use code ${newCoupon.code} to get ₹${newCoupon.value} off.`,
+          category: "COUPON",
+          targetScreen: "COUPON_DETAILS",
+          targetId: newCoupon._id.toString(),
+          channels: ["PUSH"],
+        });
+      }
+    }
+
+    return res.status(201).json({
+      success: true,
+      data: newCoupon,
+      message: "Coupon created successfully",
+      dynamicOptions: {
+        categories: Array.from(allCategories),
+        brands: Array.from(allBrands),
+      },
+    });
+  } catch (err) {
+    next(err);
+  }
+};
+
+export const createCoupon3 = async (req, res, next) => {
+  try {
+    let { productRules } = req.body;
+
+    // -----------------------------
+    // Normalize productRules
+    // -----------------------------
+    if (productRules) {
+      // Ensure type exists
+      productRules.type = productRules.type || "ALL_PRODUCTS";
+
+      // Initialize categories and brands arrays
+      productRules.categories = Array.isArray(productRules.categories)
+        ? productRules.categories.map((c) => c.trim())
+        : [];
+      productRules.brands = Array.isArray(productRules.brands)
+        ? productRules.brands.map((b) => b.trim())
+        : [];
+
+      // Convert empty strings to remove
+      productRules.categories = productRules.categories.filter(Boolean);
+      productRules.brands = productRules.brands.filter(Boolean);
+
+      // Ensure ALL_PRODUCTS type clears categories/brands
+      if (productRules.type === "ALL_PRODUCTS") {
+        productRules.categories = [];
+        productRules.brands = [];
+      }
+    }
+
+    // -----------------------------
+    // Create coupon
+    // -----------------------------
+    const newCoupon = await Coupon.create({
+      ...req.body,
+      productRules,
+    });
+
+    // -----------------------------
+    // SEND NOTIFICATIONS IF ACTIVE
+    // -----------------------------
+    if (newCoupon.status === "ACTIVE") {
+      let userQuery = { isActive: true, isBlocked: false };
+      const targeting = newCoupon.targeting || {};
+      const type = targeting.type || "ALL";
+
+      switch (type) {
+        case "ALL":
+          break;
+        case "GEOGRAPHIC":
+          if (targeting.geographic?.cities?.length)
+            userQuery.city = { $in: targeting.geographic.cities };
+          if (targeting.geographic?.areas?.length)
+            userQuery.area = { $in: targeting.geographic.areas };
+          break;
+        case "INDIVIDUAL":
+          if (targeting.users?.length) userQuery._id = { $in: targeting.users };
+          else userQuery._id = null;
+          break;
+        case "PURCHASE_HISTORY":
+          const usersWithPurchase = await Purchase.distinct("userId");
+          userQuery._id = { $in: usersWithPurchase };
+          break;
+        case "REFERRAL":
+          userQuery.referredBy = { $exists: true, $ne: null };
+          break;
+        default:
+          userQuery._id = null;
+      }
+
+      const targetUsers = await User.find(userQuery).select("_id");
+      const userIds = targetUsers.map((u) => u._id);
+
+      if (userIds.length > 0) {
+        await sendBulkNotifications(userIds, "User", {
+          title: "New Offer for You! 🎁",
+          body: `Use code ${newCoupon.code} to get ₹${newCoupon.value} off.`,
+          category: "COUPON",
+          targetScreen: "COUPON_DETAILS",
+          targetId: newCoupon._id.toString(),
+          channels: ["PUSH"],
+        });
+      }
+    }
+
+    return res.status(201).json({
+      success: true,
+      data: newCoupon,
+      message: "Coupon created successfully",
+    });
+  } catch (err) {
+    next(err);
+  }
+};
+
+export const createCoupon4 = async (req, res, next) => {
+  try {
+    let { productRules, notification } = req.body;
+
+    // -----------------------------
+    // Normalize productRules
+    // -----------------------------
+    if (productRules) {
+      productRules.type = productRules.type || "ALL_PRODUCTS";
+      productRules.categories = Array.isArray(productRules.categories)
+        ? productRules.categories.map((c) => c.trim())
+        : [];
+      productRules.brands = Array.isArray(productRules.brands)
+        ? productRules.brands.map((b) => b.trim())
+        : [];
+
+      productRules.categories = productRules.categories.filter(Boolean);
+      productRules.brands = productRules.brands.filter(Boolean);
+
+      if (productRules.type === "ALL_PRODUCTS") {
+        productRules.categories = [];
+        productRules.brands = [];
+      }
+    }
+
+    // -----------------------------
+    // Create coupon
+    // -----------------------------
+    const newCoupon = await Coupon.create({
+      ...req.body,
+      productRules,
+    });
+
+    // -----------------------------
+    // SEND NOTIFICATIONS IF ACTIVE
+    // -----------------------------
+    if (newCoupon.status === "ACTIVE") {
+      let userQuery = { isActive: true, isBlocked: false };
+      const targeting = newCoupon.targeting || {};
+      const type = targeting.type || "ALL";
+
+      switch (type) {
+        case "ALL":
+          break;
+        case "GEOGRAPHIC":
+          if (targeting.geographic?.cities?.length)
+            userQuery.city = { $in: targeting.geographic.cities };
+          if (targeting.geographic?.areas?.length)
+            userQuery.area = { $in: targeting.geographic.areas };
+          break;
+        case "INDIVIDUAL":
+          if (targeting.users?.length) userQuery._id = { $in: targeting.users };
+          else userQuery._id = null;
+          break;
+        case "PURCHASE_HISTORY":
+          const usersWithPurchase = await Purchase.distinct("userId");
+          userQuery._id = { $in: usersWithPurchase };
+          break;
+        case "REFERRAL":
+          userQuery.referredBy = { $exists: true, $ne: null };
+          break;
+        default:
+          userQuery._id = null;
+      }
+
+      const targetUsers = await User.find(userQuery).select("_id");
+      const userIds = targetUsers.map((u) => u._id);
+
+      if (userIds.length > 0) {
+        // -----------------------------
+        // Dynamic notification content
+        // -----------------------------
+        const notifTitle = notification?.title || `New Offer for You! 🎁`;
+        const notifBody =
+          notification?.body ||
+          `Use code ${newCoupon.code} to get ${
+            newCoupon.type === "PERCENTAGE"
+              ? `${newCoupon.value}% off`
+              : `₹${newCoupon.value} off`
+          }`;
+
+        await sendBulkNotifications(userIds, "User", {
+          title: notifTitle,
+          body: notifBody,
+          category: "COUPON",
+          targetScreen: "COUPON_DETAILS",
+          targetId: newCoupon._id.toString(),
+          channels: ["PUSH"],
+        });
+      }
+    }
+
+    return res.status(201).json({
+      success: true,
+      data: newCoupon,
+      message: "Coupon created successfully",
+    });
+  } catch (err) {
+    next(err);
+  }
+};
+
+export const createCoupon = async (req, res, next) => {
+  try {
     let {
       title,
       code,
@@ -42,26 +406,32 @@ export const createCoupon1 = async (req, res, next) => {
 
     // 2. LOGICAL VALIDATION
     if (type === "PERCENTAGE" && (value <= 0 || value > 100)) {
-      return res.status(400).json({
-        success: false,
-        message: "Percentage value must be between 1 and 100.",
-      });
+      return res
+        .status(400)
+        .json({
+          success: false,
+          message: "Percentage value must be between 1 and 100.",
+        });
     }
     if (type === "FIXED_AMOUNT" && value <= 0) {
-      return res.status(400).json({
-        success: false,
-        message: "Fixed amount must be greater than 0.",
-      });
+      return res
+        .status(400)
+        .json({
+          success: false,
+          message: "Fixed amount must be greater than 0.",
+        });
     }
 
     // 3. DATE VALIDATION
     const startDate = new Date(validFrom || Date.now());
     const expiryDate = new Date(validUntil);
     if (expiryDate <= startDate) {
-      return res.status(400).json({
-        success: false,
-        message: "Expiry date must be after the start date.",
-      });
+      return res
+        .status(400)
+        .json({
+          success: false,
+          message: "Expiry date must be after the start date.",
+        });
     }
 
     // 4. DUPLICATE CODE CHECK
@@ -70,10 +440,12 @@ export const createCoupon1 = async (req, res, next) => {
       status: "ACTIVE",
     });
     if (existingCoupon) {
-      return res.status(400).json({
-        success: false,
-        message: "An active coupon with this code already exists.",
-      });
+      return res
+        .status(400)
+        .json({
+          success: false,
+          message: "An active coupon with this code already exists.",
+        });
     }
 
     // 5. DATA NORMALIZATION (Sanitizing Input)
@@ -91,10 +463,12 @@ export const createCoupon1 = async (req, res, next) => {
     if (targeting?.type === "INDIVIDUAL" && targeting?.csvMobiles?.length > 0) {
       // Basic check to ensure we aren't processing a million numbers at once
       if (targeting.csvMobiles.length > 5000) {
-        return res.status(400).json({
-          success: false,
-          message: "CSV limit exceeded. Max 5000 users per campaign.",
-        });
+        return res
+          .status(400)
+          .json({
+            success: false,
+            message: "CSV limit exceeded. Max 5000 users per campaign.",
+          });
       }
 
       const users = await User.find({
@@ -165,177 +539,6 @@ export const createCoupon1 = async (req, res, next) => {
     // Handle Mongoose Validation Errors specifically
     if (err.name === "ValidationError") {
       return res.status(400).json({ success: false, message: err.message });
-    }
-    next(err);
-  }
-};
-
-export const createCoupon = async (req, res, next) => {
-  try {
-    let {
-      title,
-      code,
-      type,
-      value,
-      validFrom,
-      validUntil,
-      productRules,
-      notification,
-      targeting,
-      minPurchaseAmount,
-      neverExpires,
-    } = req.body;
-
-    // 1. MANDATORY FIELD VALIDATION
-    if (!title || !code || !type || value === undefined) {
-      return res.status(400).json({
-        success: false,
-        message:
-          "Missing mandatory fields: Title, Code, Type, and Value are required.",
-      });
-    }
-
-    // 2. LOGICAL VALIDATION
-    if (type === "PERCENTAGE" && (value <= 0 || value > 100)) {
-      return res.status(400).json({
-        success: false,
-        message: "Percentage value must be between 1 and 100.",
-      });
-    }
-
-    if (type === "FIXED_AMOUNT" && value <= 0) {
-      return res.status(400).json({
-        success: false,
-        message: "Fixed amount must be greater than 0.",
-      });
-    }
-
-    // 3. DATE VALIDATION
-    const startDate = new Date(validFrom || Date.now());
-    let expiryDate = null;
-
-    if (!neverExpires) {
-      if (!validUntil) {
-        return res.status(400).json({
-          success: false,
-          message: "Expiry date is required unless coupon never expires.",
-        });
-      }
-
-      expiryDate = new Date(validUntil);
-
-      if (expiryDate <= startDate) {
-        return res.status(400).json({
-          success: false,
-          message: "Expiry date must be after the start date.",
-        });
-      }
-    }
-
-    // 4. DUPLICATE CODE CHECK
-    const existingCoupon = await Coupon.findOne({
-      code: code.toUpperCase().trim(),
-      status: "ACTIVE",
-    });
-
-    if (existingCoupon) {
-      return res.status(400).json({
-        success: false,
-        message: "An active coupon with this code already exists.",
-      });
-    }
-
-    // 5. DATA NORMALIZATION
-    const normalizedCode = code.toUpperCase().trim();
-
-    if (productRules) {
-      const pType = productRules.type || "ALL_PRODUCTS";
-      productRules.categories =
-        pType === "CATEGORY" ? productRules.categories || [] : [];
-      productRules.brands = pType === "BRAND" ? productRules.brands || [] : [];
-    }
-
-    // 6. RESOLVE TARGETING (CSV Mobiles)
-    if (targeting?.type === "INDIVIDUAL" && targeting?.csvMobiles?.length > 0) {
-      if (targeting.csvMobiles.length > 5000) {
-        return res.status(400).json({
-          success: false,
-          message: "CSV limit exceeded. Max 5000 users per campaign.",
-        });
-      }
-
-      const users = await User.find({
-        mobile: { $in: targeting.csvMobiles },
-        isActive: true,
-      }).select("_id");
-
-      targeting.users = users.map((u) => u._id);
-    }
-
-    // 7. SAVE TO DATABASE
-    const newCoupon = await Coupon.create({
-      ...req.body,
-      code: normalizedCode,
-      validFrom: startDate,
-      validUntil: neverExpires ? null : expiryDate,
-      neverExpires: neverExpires || false,
-      productRules,
-      targeting,
-      value: Number(value),
-      minPurchaseAmount: Number(minPurchaseAmount || 0),
-      maxDiscountAmount: Number(req.body.maxDiscountAmount || 0),
-      maxRedemptions: Number(req.body.maxRedemptions || 0),
-    });
-
-    // 8. NOTIFICATION LOGIC
-    if (newCoupon.status === "ACTIVE") {
-      let userQuery = { isActive: true, isBlocked: false };
-
-      if (targeting?.type === "GEOGRAPHIC") {
-        if (targeting.geographic?.cities?.length)
-          userQuery.city = { $in: targeting.geographic.cities };
-
-        if (targeting.geographic?.areas?.length)
-          userQuery.area = { $in: targeting.geographic.areas };
-      } else if (targeting?.type === "INDIVIDUAL") {
-        userQuery._id = { $in: targeting.users || [] };
-      }
-
-      const targetUsers = await User.find(userQuery).select("_id");
-      const userIds = targetUsers.map((u) => u._id);
-
-      if (userIds.length > 0) {
-        const displayValue = type === "PERCENTAGE" ? `${value}%` : `₹${value}`;
-
-        let notifBody =
-          notification?.body || "New offer! Use code {code} for {value} off.";
-
-        notifBody = notifBody
-          .replace(/{code}/g, newCoupon.code)
-          .replace(/{value}/g, displayValue);
-
-        await sendBulkNotifications(userIds, "User", {
-          title: notification?.title || "Limited Time Offer! 🎁",
-          body: notifBody,
-          category: "COUPON",
-          targetScreen: "COUPON_DETAILS",
-          targetId: newCoupon._id.toString(),
-          channels: ["PUSH"],
-        });
-      }
-    }
-
-    return res.status(201).json({
-      success: true,
-      data: newCoupon,
-      message: "Coupon validated, created, and notifications dispatched.",
-    });
-  } catch (err) {
-    if (err.name === "ValidationError") {
-      return res.status(400).json({
-        success: false,
-        message: err.message,
-      });
     }
     next(err);
   }
@@ -570,8 +773,6 @@ export const claimCoupon = async (req, res, next) => {
 // @access  Private (Store staff)
 export const validateCoupon = async (req, res, next) => {
   try {
-
-    console.log("first validateCoupon")
     const { qrData, manualCode, purchaseAmount = 0 } = req.body;
 
     if (!qrData && !manualCode) {
@@ -586,7 +787,7 @@ export const validateCoupon = async (req, res, next) => {
     if (qrData) {
       validationResult = await UserCoupon.validateQRCode(qrData);
     } else {
-      validationResult = await UserCoupon.validateManualCode2(manualCode);
+      validationResult = await UserCoupon.validateManualCode(manualCode);
     }
 
     if (!validationResult.valid) {
@@ -709,11 +910,13 @@ export const getDynamicOptions = async (req, res, next) => {
   }
 };
 
+// import UserCoupon from "../models/UserCoupon.model.js";
+// import Purchase from "../models/Purchase.model.js"; // To link the sale
+
 // 1. Validate (via QR or Manual Code)
 
 export const validateForStaff = async (req, res, next) => {
   try {
-    console.log("validateForStaff hit")
     const { code } = req.body; // uniqueCode from the QR scan or manual entry
 
     // Call the static method you defined in the schema
@@ -907,7 +1110,9 @@ export const getMyDiscoverableCoupons = async (req, res, next) => {
     // Flatten categorized coupons if your service returns categorized structure
     const allCoupons = Object.values(result.categorizedCoupons || {}).flat();
 
-    console.log("allCoupons", allCoupons);
+
+console.log("allCoupons",allCoupons)
+
 
     return res.status(200).json({
       success: true,
@@ -1025,7 +1230,7 @@ export const getMyCouponHistory = async (req, res, next) => {
         { validUntil: { $lt: now } },
       ],
     })
-      .select("-qrCodeData -qrCodeImage")
+    .select("-qrCodeData -qrCodeImage") 
       .populate(
         "couponId",
         "code title type value maxDiscount minPurchaseAmount validUntil",

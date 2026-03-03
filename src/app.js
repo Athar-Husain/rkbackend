@@ -26,7 +26,7 @@ import locationRoutes from "./routes/cityArea.js";
 import analyticsRoutes from "./routes/analytics.js";
 import homeRoutes from "./routes/home.js";
 import bannerRoutes from "./routes/banner.routes.js";
-import promotionRoutes from "./routes/banner.routes.js";
+import promotionRoutes from "./routes/promotion.routes.js";
 
 // Middleware
 import errorHandler from "./middleware/errorHandler.js";

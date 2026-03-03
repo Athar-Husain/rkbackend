@@ -2,43 +2,39 @@ import mongoose from "mongoose";
 
 const productSchema = new mongoose.Schema(
   {
-    /* ------------------ Basic Info ------------------ */
+    // ------------------ Basic Info ------------------
     sku: {
       type: String,
       required: [true, "SKU is required"],
       unique: true,
       trim: true,
       uppercase: true,
-      index: true,
     },
     name: {
       type: String,
       required: [true, "Product name is required"],
       trim: true,
-      index: true,
     },
     category: {
       type: String,
       required: true,
       lowercase: true,
-      index: true,
     },
     subcategory: String,
     brand: {
       type: String,
       required: true,
-      index: true,
     },
     model: {
       type: String,
       required: true,
     },
 
-    /* ------------------ Description ------------------ */
+    // ------------------ Description ------------------
     description: String,
     highlights: [String],
 
-    /* ------------------ Media ------------------ */
+    // ------------------ Media ------------------
     images: [
       {
         url: String,
@@ -47,18 +43,18 @@ const productSchema = new mongoose.Schema(
       },
     ],
 
-    /* ------------------ Specifications ------------------ */
+    // ------------------ Specifications ------------------
     specifications: {
       type: Map,
       of: mongoose.Schema.Types.Mixed,
     },
 
-    /* ------------------ Pricing ------------------ */
+    // ------------------ Pricing ------------------
     mrp: { type: Number, required: true, min: 0 },
     sellingPrice: { type: Number, required: true, min: 0 },
     discountPercentage: { type: Number, default: 0, min: 0, max: 100 },
 
-    /* ------------------ Inventory ------------------ */
+    // ------------------ Inventory ------------------
     availableInStores: [
       {
         storeId: { type: mongoose.Schema.Types.ObjectId, ref: "Store" },
@@ -68,17 +64,16 @@ const productSchema = new mongoose.Schema(
     ],
     overallStock: { type: Number, default: 0 },
 
-    /* ------------------ Attributes ------------------ */
-    isFeatured: { type: Boolean, default: false, index: true },
+    // ------------------ Attributes ------------------
+    isFeatured: { type: Boolean, default: false },
     isNewArrival: { type: Boolean, default: false },
     isBestSeller: { type: Boolean, default: false },
-    isActive: { type: Boolean, default: true, index: true },
-    priority: { type: Number, default: 0, index: true },
+    isActive: { type: Boolean, default: true },
 
-    /* ------------------ Metadata ------------------ */
+    // ------------------ Metadata ------------------
     createdBy: { type: mongoose.Schema.Types.ObjectId, ref: "User" },
     keywords: [String],
-    slug: { type: String, unique: true, lowercase: true, index: true },
+    slug: { type: String, unique: true, lowercase: true },
   },
   {
     timestamps: true,
@@ -87,31 +82,21 @@ const productSchema = new mongoose.Schema(
   },
 );
 
-/* =====================================================
-   PRE-SAVE HOOK
-===================================================== */
-
+// ------------------ Pre-save hook ------------------
 productSchema.pre("save", function () {
-  // Generate slug
   if (!this.slug) {
     this.slug = `${this.brand}-${this.model}-${this.sku}`
       .replace(/\s+/g, "-")
       .toLowerCase();
   }
 
-  // Safe discount calculation
-  const mrp = this.mrp ?? 0;
-  const selling = this.sellingPrice ?? 0;
-
-  if (mrp > 0 && selling >= 0) {
-    this.discountPercentage = Math.max(
-      0,
-      Math.round(((mrp - selling) / mrp) * 100),
+  if (this.mrp && this.sellingPrice) {
+    this.discountPercentage = Math.round(
+      ((this.mrp - this.sellingPrice) / this.mrp) * 100,
     );
   }
 
-  // Calculate overall stock
-  if (Array.isArray(this.availableInStores)) {
+  if (this.availableInStores && this.availableInStores.length > 0) {
     this.overallStock = this.availableInStores.reduce(
       (total, store) => total + (store.stock || 0),
       0,
@@ -119,9 +104,16 @@ productSchema.pre("save", function () {
   }
 });
 
-/* =====================================================
-   SAFE VIRTUALS (NEVER CRASH)
-===================================================== */
+// ------------------ Virtuals ------------------
+// productSchema.virtual("formattedMRP").get(function () {
+//   return `₹${this.mrp.toLocaleString("en-IN")}`;
+// });
+// productSchema.virtual("formattedSellingPrice").get(function () {
+//   return `₹${this.sellingPrice.toLocaleString("en-IN")}`;
+// });
+// productSchema.virtual("formattedSavings").get(function () {
+//   return `₹${(this.mrp - this.sellingPrice).toLocaleString("en-IN")}`;
+// });
 
 productSchema.virtual("formattedMRP").get(function () {
   const mrp = this.mrp ?? 0;
@@ -138,12 +130,6 @@ productSchema.virtual("formattedSavings").get(function () {
   const price = this.sellingPrice ?? 0;
   return `₹${(mrp - price).toLocaleString("en-IN")}`;
 });
-
-/* =====================================================
-   INDEXES
-===================================================== */
-
-productSchema.index({ name: "text", brand: "text", category: "text" });
 
 const Product = mongoose.model("Product", productSchema);
 export default Product;

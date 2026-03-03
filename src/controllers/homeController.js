@@ -1,52 +1,39 @@
 import Banner from "../models/Banner.model.js";
 import Promotion from "../models/Promotion.model.js";
-import Product from "../models/Product.model.js";
 import User from "../models/User.model.js";
 
 /* =====================================================
    HOME DASHBOARD
 ===================================================== */
-
 export const getHomeDashboard = async (req, res) => {
   try {
-    const userId = req.user?._id || null;
+    const user = req.user
+      ? await User.findById(req.user._id)
+          .select(
+            "name email mobile walletBalance referralCode segments city area store",
+          )
+          .lean()
+      : null;
 
-    /* -------------------------------
-       BANNERS
-    -------------------------------- */
-    const banners = await Banner.getActiveBanners();
+    const [banners, featuredPromotions, activePromotions] = await Promise.all([
+      Banner.getActiveBanners({ user, limit: 10 }),
+      Promotion.getActivePromotions({ user, featured: true, limit: 5 }),
+      Promotion.getPromotionsForUser(user, { limit: 10 }),
+    ]);
 
-    /* -------------------------------
-       FEATURED PROMOTIONS
-    -------------------------------- */
-    const featuredPromotions = await Promotion.getFeaturedPromotions(5);
+    console.log(
+      "Dashboard banners:",
+      banners.map((b) => b.title),
+    );
+    console.log(
+      "Featured promotions:",
+      featuredPromotions.map((p) => p.title),
+    );
+    console.log(
+      "Active promotions:",
+      activePromotions.map((p) => p.title),
+    );
 
-    /* -------------------------------
-       USER-SPECIFIC PROMOTIONS
-    -------------------------------- */
-    let activePromotions = [];
-    if (userId) {
-      activePromotions = await Promotion.getPromotionsForUser(userId, {
-        limit: 10,
-      });
-    } else {
-      activePromotions = await Promotion.getActivePromotions({ limit: 10 });
-    }
-
-    /* -------------------------------
-       TRENDING PRODUCTS
-    -------------------------------- */
-    const trendingProducts = await Product.find({
-      isActive: true,
-      isFeatured: true,
-    })
-      .sort({ priority: -1, createdAt: -1 })
-      .limit(10)
-      .select("name price images discount category brand");
-
-    /* -------------------------------
-       QUICK ACCESS
-    -------------------------------- */
     const quickAccess = [
       {
         id: 1,
@@ -61,26 +48,14 @@ export const getHomeDashboard = async (req, res) => {
       { id: 6, title: "Store Locator", icon: "store", route: "/stores" },
     ];
 
-    /* -------------------------------
-       USER DATA (OPTIONAL)
-    -------------------------------- */
-    let userData = null;
-    if (userId) {
-      const user = await User.findById(userId).select(
-        "name email mobile walletBalance referralCode",
-      );
-      if (user) userData = user.toObject();
-    }
-
     return res.json({
       success: true,
       dashboard: {
         banners,
         featuredPromotions,
         activePromotions,
-        trendingProducts,
         quickAccess,
-        userData,
+        userData: user || null,
       },
     });
   } catch (error) {
@@ -91,10 +66,6 @@ export const getHomeDashboard = async (req, res) => {
     });
   }
 };
-
-/* =====================================================
-   GET BANNERS
-===================================================== */
 
 export const getBanners = async (req, res) => {
   try {
@@ -114,36 +85,6 @@ export const getBanners = async (req, res) => {
     });
   }
 };
-
-/* =====================================================
-   GET PROMOTIONS
-===================================================== */
-
-export const getPromotions = async (req, res) => {
-  try {
-    const { featured = false, limit = 10 } = req.query;
-
-    const promotions =
-      featured === "true"
-        ? await Promotion.getFeaturedPromotions(parseInt(limit))
-        : await Promotion.getActivePromotions({ limit: parseInt(limit) });
-
-    return res.json({
-      success: true,
-      promotions,
-    });
-  } catch (error) {
-    console.error("Get promotions error:", error);
-    return res.status(500).json({
-      success: false,
-      message: "Failed to load promotions",
-    });
-  }
-};
-
-/* =====================================================
-   GET FEATURED PRODUCTS
-===================================================== */
 
 export const getFeaturedProducts = async (req, res) => {
   try {
@@ -170,9 +111,31 @@ export const getFeaturedProducts = async (req, res) => {
   }
 };
 
-/* =====================================================
-   GET QUICK ACCESS
-===================================================== */
+export const getPromotions = async (req, res) => {
+  try {
+    // Parse query params safely
+    const featured = req.query.featured === "true"; // convert to boolean
+    const limit = Math.max(1, Math.min(parseInt(req.query.limit) || 10, 100));
+    // ensures limit is between 1 and 100
+
+    // Fetch promotions using schema statics
+    const promotions = featured
+      ? await Promotion.getFeaturedPromotions(limit)
+      : await Promotion.getActivePromotions({ limit });
+
+    console.log("promotions", promotions);
+    return res.json({
+      success: true,
+      promotions,
+    });
+  } catch (error) {
+    console.error("Get promotions error:", error);
+    return res.status(500).json({
+      success: false,
+      message: "Failed to load promotions",
+    });
+  }
+};
 
 export const getQuickAccess = async (req, res) => {
   try {
@@ -202,10 +165,6 @@ export const getQuickAccess = async (req, res) => {
     });
   }
 };
-
-/* =====================================================
-   SEARCH OFFERS (BANNERS + PROMOTIONS)
-===================================================== */
 
 export const searchOffers = async (req, res) => {
   try {
@@ -252,5 +211,115 @@ export const searchOffers = async (req, res) => {
       success: false,
       message: "Failed to search offers",
     });
+  }
+};
+
+/* =====================================================
+   ACTIVE PROMOTIONS FOR USER
+===================================================== */
+export const getActivePromotionsForUser = async (req, res) => {
+  try {
+    const user = req.user
+      ? await User.findById(req.user._id)
+          .select("segments city area store")
+          .lean()
+      : null;
+
+    const promotions = await Promotion.getPromotionsForUser(user, {
+      limit: 20,
+    });
+    console.log(
+      "Active promotions for user:",
+      promotions.map((p) => p.title),
+    );
+
+    return res.json({ success: true, promotions });
+  } catch (error) {
+    console.error("Error fetching active promotions:", error);
+    return res
+      .status(500)
+      .json({ success: false, message: "Failed to load active promotions" });
+  }
+};
+
+/* =====================================================
+   FEATURED PROMOTIONS FOR USER
+===================================================== */
+export const getFeaturedPromotionsForUser = async (req, res) => {
+  try {
+    const user = req.user
+      ? await User.findById(req.user._id)
+          .select("segments city area store")
+          .lean()
+      : null;
+
+    const promotions = await Promotion.getActivePromotions({
+      user,
+      featured: true,
+      limit: 10,
+    });
+    console.log(
+      "Featured promotions for user:",
+      promotions.map((p) => p.title),
+    );
+
+    return res.json({ success: true, promotions });
+  } catch (error) {
+    console.error("Error fetching featured promotions:", error);
+    return res
+      .status(500)
+      .json({ success: false, message: "Failed to load featured promotions" });
+  }
+};
+
+/* =====================================================
+   ACTIVE BANNERS FOR USER
+===================================================== */
+export const getActiveBannersForUser = async (req, res) => {
+  try {
+    const user = req.user
+      ? await User.findById(req.user._id)
+          .select("segments city area store")
+          .lean()
+      : null;
+
+    const banners = await Banner.getActiveBanners({ user, limit: 10 });
+    console.log(
+      "Active banners for user:",
+      banners.map((b) => b.title),
+    );
+
+    return res.json({ success: true, banners });
+  } catch (error) {
+    console.error("Error fetching active banners:", error);
+    return res
+      .status(500)
+      .json({ success: false, message: "Failed to load active banners" });
+  }
+};
+
+/* =====================================================
+   FEATURED BANNERS FOR USER
+===================================================== */
+export const getFeaturedBannersForUser = async (req, res) => {
+  try {
+    const user = req.user
+      ? await User.findById(req.user._id)
+          .select("segments city area store")
+          .lean()
+      : null;
+
+    const banners = await Banner.getActiveBanners({ user, limit: 5 }); // adjust limit as needed
+    console.log(
+      "Featured banners for user:",
+      banners.map((b) => b.title),
+    );
+
+    return res.json({ success: true, banners });
+  } catch (error) {
+    console.error("Error fetching featured banners:", error);
+    return res
+      .status(500)
+      .json({ success: false, message: "Failed to load featured banners" });
   }
 };
