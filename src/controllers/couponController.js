@@ -318,7 +318,7 @@ export const createCoupon = async (req, res, next) => {
           title: notification?.title || "Limited Time Offer! 🎁",
           body: notifBody,
           category: "COUPON",
-          targetScreen: "COUPON_DETAILS",
+          targetScreen: "Coupons",
           targetId: newCoupon._id.toString(),
           channels: ["PUSH"],
         });
@@ -570,8 +570,7 @@ export const claimCoupon = async (req, res, next) => {
 // @access  Private (Store staff)
 export const validateCoupon = async (req, res, next) => {
   try {
-
-    console.log("first validateCoupon")
+    console.log("first validateCoupon");
     const { qrData, manualCode, purchaseAmount = 0 } = req.body;
 
     if (!qrData && !manualCode) {
@@ -713,7 +712,7 @@ export const getDynamicOptions = async (req, res, next) => {
 
 export const validateForStaff = async (req, res, next) => {
   try {
-    console.log("validateForStaff hit")
+    console.log("validateForStaff hit");
     const { code } = req.body; // uniqueCode from the QR scan or manual entry
 
     // Call the static method you defined in the schema
@@ -907,7 +906,7 @@ export const getMyDiscoverableCoupons = async (req, res, next) => {
     // Flatten categorized coupons if your service returns categorized structure
     const allCoupons = Object.values(result.categorizedCoupons || {}).flat();
 
-    console.log("allCoupons", allCoupons);
+    // console.log("allCoupons", allCoupons);
 
     return res.status(200).json({
       success: true,

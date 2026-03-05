@@ -4,7 +4,7 @@ import User from "../models/User.model.js";
 import Staff from "../models/Staff.model.js";
 import Admin from "../models/Admin.js";
 import NotificationLog from "../models/NotificationLog.model.js";
-import mongoose from "mongoose";
+// import NotificationLog from "../models/NotificationLog.model.js";
 
 const require = createRequire(import.meta.url);
 
@@ -36,7 +36,6 @@ const getModel = (userModel) => {
   return Model;
 };
 
-// Internal helper for single sends
 const logNotification = async (logData) => {
   try {
     await NotificationLog.create(logData);
@@ -51,30 +50,31 @@ export const sendNotificationSMS = async (
   mobile,
   message,
 ) => {
-  // if (!twilioClient) return { success: false };
+  if (!twilioClient) return { success: false };
   try {
-    // SMS Logic here...
-    await logNotification({
-      userId,
-      userModel,
-      type: "SMS",
-      title: "SMS Alert",
-      content: message,
-      deliveryStatus: "SENT",
+    const sms = await twilioClient.messages.create({
+      body: message,
+      from: process.env.TWILIO_PHONE_NUMBER,
+      to: `+91${mobile}`,
+    });
+
+    await logNotification(userId, userModel, "SMS", "SMS Alert", message, {
+      sid: sms.sid,
     });
     return { success: true };
   } catch (err) {
     return { success: false };
   }
 };
-
+/**
+ * Sends a push notification using DATA-ONLY payload to prevent duplicates.
+ */
 export const sendPushNotification = async (
   userId,
   userModel,
   title,
   body,
   navData = {},
-  skipLog = false,
 ) => {
   try {
     if (!firebaseInitialized)
@@ -88,6 +88,7 @@ export const sendPushNotification = async (
     const tokens = user.deviceTokens.map((t) => t.token).filter(Boolean);
     if (!tokens.length) return { success: false, message: "No valid tokens" };
 
+    // INDUSTRY STANDARD: Use "data" only. Do NOT use the "notification" key.
     const message = {
       tokens,
       data: {
@@ -98,13 +99,22 @@ export const sendPushNotification = async (
         targetId: String(navData.targetId || ""),
         image: String(navData.image || ""),
       },
-      android: { priority: "high" },
-      apns: { payload: { aps: { contentAvailable: true, badge: 1 } } },
+      android: {
+        priority: "high",
+      },
+      apns: {
+        payload: {
+          aps: {
+            contentAvailable: true,
+            badge: 1,
+          },
+        },
+      },
     };
 
     const response = await admin.messaging().sendEachForMulticast(message);
 
-    // Cleanup logic
+    // Clean up invalid tokens
     const invalidTokens = [];
     response.responses.forEach((r, index) => {
       if (
@@ -123,33 +133,26 @@ export const sendPushNotification = async (
       );
     }
 
-    // Only log here if NOT called from bulk (to avoid duplicate logs)
-    if (!skipLog) {
-      await logNotification({
-        userId,
-        userModel,
-        type: "PUSH",
-        title,
-        content: body,
-        category: navData.category,
-        targetScreen: navData.targetScreen,
-        targetId: navData.targetId,
-        deliveryStatus: response.successCount > 0 ? "DELIVERED" : "FAILED",
-      });
-    }
+    await logNotification({
+      userId,
+      userModel,
+      type: "PUSH",
+      title,
+      content: body,
+      category: navData.category,
+      targetScreen: navData.targetScreen,
+      targetId: navData.targetId,
+      deliveryStatus: response.successCount > 0 ? "DELIVERED" : "FAILED",
+    });
 
     return { success: true, successCount: response.successCount };
   } catch (err) {
+    console.error("Push Error:", err.message);
     return { success: false, error: err.message };
   }
 };
 
-export const triggerNotification = async (
-  recipientId,
-  userModel,
-  options,
-  skipLog = false,
-) => {
+export const triggerNotification = async (recipientId, userModel, options) => {
   const {
     title,
     body,
@@ -164,21 +167,14 @@ export const triggerNotification = async (
 
   if (channels.includes("PUSH")) {
     results.push(
-      await sendPushNotification(
-        recipientId,
-        userModel,
-        title,
-        body,
-        navData,
-        skipLog,
-      ),
+      await sendPushNotification(recipientId, userModel, title, body, navData),
     );
   }
   return results;
 };
 
 /**
- * Bulk sending with high-speed insertMany for NotificationLog
+ * Bulk sending with chunking (500 tokens per batch) for scalability.
  */
 export const sendBulkNotifications = async (userIds, userModel, options) => {
   const results = { total: userIds.length, success: 0, failed: 0 };
@@ -186,40 +182,15 @@ export const sendBulkNotifications = async (userIds, userModel, options) => {
 
   for (let i = 0; i < userIds.length; i += CHUNK_SIZE) {
     const chunk = userIds.slice(i, i + CHUNK_SIZE);
-    const bulkLogs = [];
+    const chunkPromises = chunk.map((id) =>
+      triggerNotification(id, userModel, options),
+    );
+    const responses = await Promise.all(chunkPromises);
 
-    const chunkPromises = chunk.map(async (id) => {
-      // pass skipLog = true to avoid individual NotificationLog.create calls
-      const responses = await triggerNotification(id, userModel, options, true);
-
-      const isSuccess = responses.some((r) => r.success);
-      if (isSuccess) results.success++;
+    responses.forEach((res) => {
+      if (res.some((r) => r.success)) results.success++;
       else results.failed++;
-
-      // Prepare data for the bulk insert
-      bulkLogs.push({
-        // userId: id,
-        userId: new mongoose.Types.ObjectId(id),
-        userModel,
-        title: options.title,
-        content: options.body,
-        category: options.category || "SYSTEM",
-        targetScreen: options.targetScreen,
-        targetId: options.targetId,
-        type: "PUSH",
-        deliveryStatus: isSuccess ? "DELIVERED" : "FAILED",
-        isRead: false,
-      });
     });
-
-    await Promise.all(chunkPromises);
-
-    // Log all users in this chunk to the schema at once
-    if (bulkLogs.length > 0) {
-      await NotificationLog.insertMany(bulkLogs, { ordered: false }).catch(
-        (err) => console.error("Bulk Log Error:", err.message),
-      );
-    }
   }
   return results;
 };

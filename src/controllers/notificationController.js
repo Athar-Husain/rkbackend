@@ -1,14 +1,12 @@
-import NotificationLog from "../models/NotificationLog.js";
+import NotificationLog from "../models/NotificationLog.model.js";
 
 /* GET MY NOTIFICATIONS */
 export const getMyNotifications = async (req, res, next) => {
   try {
     const { page = 1, limit = 20 } = req.query;
 
-    const query = {
-      userId: req.user._id,
-      userModel: req.userModel,
-    };
+    // Standardized query: only filter by userId for maximum reliability
+    const query = { userId: req.user._id };
 
     const notifications = await NotificationLog.find(query)
       .sort({ createdAt: -1 })
@@ -16,12 +14,12 @@ export const getMyNotifications = async (req, res, next) => {
       .limit(Number(limit));
 
     const total = await NotificationLog.countDocuments(query);
-
     const unreadCount = await NotificationLog.countDocuments({
       ...query,
       isRead: false,
     });
 
+    // console.log("notifications", notifications);
     res.status(200).json({
       success: true,
       unreadCount,
@@ -37,39 +35,38 @@ export const getMyNotifications = async (req, res, next) => {
   }
 };
 
-/* MARK AS READ */
+/* MARK SPECIFIC NOTIFICATIONS AS READ */
 export const markNotificationsAsRead = async (req, res, next) => {
   try {
-    const { ids } = req.body;
+    const { ids } = req.body; // Expects an array of notification IDs
 
     await NotificationLog.updateMany(
       {
         _id: { $in: ids },
-        userId: req.user._id,
-        userModel: req.userModel,
+        userId: req.user._id, // Security check: ensures user owns the notification
       },
-      { $set: { isRead: true } }
+      { $set: { isRead: true } },
     );
 
-    res.json({ success: true });
+    res.json({ success: true, message: "Notifications updated" });
   } catch (err) {
     next(err);
   }
 };
+
+/* MARK ALL NOTIFICATIONS AS READ (Global Clear) */
 export const markAllNotificationsAsRead = async (req, res, next) => {
   try {
-    const { ids } = req.body;
-
+    // No IDs needed; we mark everything for this user as read
     await NotificationLog.updateMany(
       {
-        _id: { $in: ids },
         userId: req.user._id,
-        userModel: req.userModel,
+        isRead: false,
       },
-      { $set: { isRead: true } }
+      { $set: { isRead: true } },
     );
 
-    res.json({ success: true });
+    res.json({ success: true, message: "All notifications marked as read" });
   } catch (err) {
     next(err);
   }

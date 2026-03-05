@@ -27,6 +27,7 @@ import analyticsRoutes from "./routes/analytics.js";
 import homeRoutes from "./routes/home.js";
 import bannerRoutes from "./routes/banner.routes.js";
 import promotionRoutes from "./routes/promotion.routes.js";
+import notificationRoutes from "./routes/notifications.routes.js";
 
 // Middleware
 import errorHandler from "./middleware/errorHandler.js";
@@ -98,6 +99,7 @@ app.use("/uploads", express.static(path.join(__dirname, "./uploads")));
    Routes
 ======================= */
 app.use("/api/auth", authRoutes);
+app.use("/api/notifications", notificationRoutes);
 app.use("/api/users", userRoutes);
 app.use("/api/products", productRoutes);
 app.use("/api/coupons", couponRoutes);

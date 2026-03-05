@@ -199,9 +199,7 @@ export const generateToken = (id, role = "user") => {
   });
 };
 
-
-
-export const AllProtect = async (req, res, next) => {
+export const AllProtect1 = async (req, res, next) => {
   try {
     let token;
 
@@ -212,21 +210,18 @@ export const AllProtect = async (req, res, next) => {
       token = req.headers.authorization.split(" ")[1];
     }
 
-    if (!token)
-      return res.status(401).json({ message: "Not authorized" });
+    if (!token) return res.status(401).json({ message: "Not authorized" });
 
     const decoded = jwt.verify(token, process.env.JWT_SECRET);
 
     const models = { User, Staff, Admin };
     const Model = models[decoded.userModel];
 
-    if (!Model)
-      return res.status(401).json({ message: "Invalid role" });
+    if (!Model) return res.status(401).json({ message: "Invalid role" });
 
     const user = await Model.findById(decoded.id).select("-password");
 
-    if (!user)
-      return res.status(401).json({ message: "User not found" });
+    if (!user) return res.status(401).json({ message: "User not found" });
 
     req.user = user;
     req.userModel = decoded.userModel;
@@ -234,5 +229,39 @@ export const AllProtect = async (req, res, next) => {
     next();
   } catch (err) {
     return res.status(401).json({ message: "Unauthorized" });
+  }
+};
+
+export const AllProtect = async (req, res, next) => {
+  let token;
+
+  if (req.headers.authorization?.startsWith("Bearer")) {
+    token = req.headers.authorization.split(" ")[1];
+  } else if (req.cookies?.token) {
+    token = req.cookies.token;
+  }
+
+  if (!token)
+    return res.status(401).json({ success: false, error: "Not authorized" });
+
+  try {
+    const decoded = jwt.verify(token, process.env.JWT_SECRET);
+
+    // Try finding user in all models
+    let user =
+      (await User.findById(decoded.id).select("-password")) ||
+      (await Admin.findById(decoded.id).select("-password")) ||
+      (await Staff.findById(decoded.id).select("-password"));
+
+    if (!user)
+      return res.status(401).json({ success: false, error: "User not found" });
+
+    req.user = user;
+
+    next();
+  } catch (err) {
+    return res
+      .status(401)
+      .json({ success: false, error: "Invalid or expired token" });
   }
 };

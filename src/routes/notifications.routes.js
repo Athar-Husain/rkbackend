@@ -1,20 +1,26 @@
 import express from "express";
-// import { protect } from "../middleware/protect.js";
 import { AllProtect } from "../middleware/auth.js";
 import {
   getMyNotifications,
   markNotificationsAsRead,
+  markAllNotificationsAsRead,
 } from "../controllers/notificationController.js";
-// import {
-//   getMyNotifications,
-//   markNotificationsAsRead,
-// } from "../controllers/notification.controller.js";
 
 const router = express.Router();
 
-// Get logged-in user's notifications
-router.get("/myNotifications", AllProtect, getMyNotifications);
+// ===============================
+// GET MY NOTIFICATIONS
+// ===============================
+router.get("/my-notifications", AllProtect, getMyNotifications);
 
-// Mark notifications as read
+// ===============================
+// MARK SELECTED NOTIFICATIONS AS READ
+// ===============================
 router.patch("/read", AllProtect, markNotificationsAsRead);
+
+// ===============================
+// MARK ALL NOTIFICATIONS AS READ
+// ===============================
+router.patch("/read-all", AllProtect, markAllNotificationsAsRead);
+
 export default router;
