@@ -462,6 +462,8 @@ export const staffLogout = async (req, res) => {
   try {
     const { deviceToken, deviceId } = req.body;
     // const staff = await Staff.findById(req.staff._id);
+
+    // console.log("req. user in staff logout ", req.user)
     const staff = await Staff.findById(req.user._id);
     if (!staff) return fail(res, 404, "Staff not found");
 
@@ -672,7 +674,7 @@ export const getStaffLoginStatus = async (req, res) => {
   try {
     // console.log("req.user", req.staff);
 
-    const user = await Staff.findById(req.staff._id).select(
+    const user = await Staff.findById(req.user._id).select(
       "_id name email mobile isActive isVerified lastLogin userType walletBalance deviceTokens",
     );
 

@@ -21,19 +21,6 @@ export const getHomeDashboard = async (req, res) => {
       Promotion.getPromotionsForUser(user, { limit: 10 }),
     ]);
 
-    console.log(
-      "Dashboard banners:",
-      banners.map((b) => b.title),
-    );
-    console.log(
-      "Featured promotions:",
-      featuredPromotions.map((p) => p.title),
-    );
-    console.log(
-      "Active promotions:",
-      activePromotions.map((p) => p.title),
-    );
-
     const quickAccess = [
       {
         id: 1,
@@ -59,7 +46,7 @@ export const getHomeDashboard = async (req, res) => {
       },
     });
   } catch (error) {
-    console.error("Home dashboard error:", error);
+    // // console.error("Home dashboard error:", error);
     return res.status(500).json({
       success: false,
       message: "Failed to load home dashboard",
@@ -78,7 +65,7 @@ export const getBanners = async (req, res) => {
       banners: banners.slice(0, parseInt(limit)),
     });
   } catch (error) {
-    console.error("Get banners error:", error);
+    // // console.error("Get banners error:", error);
     return res.status(500).json({
       success: false,
       message: "Failed to load banners",
@@ -103,7 +90,7 @@ export const getFeaturedProducts = async (req, res) => {
       products,
     });
   } catch (error) {
-    console.error("Get featured products error:", error);
+    // // console.error("Get featured products error:", error);
     return res.status(500).json({
       success: false,
       message: "Failed to load featured products",
@@ -123,13 +110,13 @@ export const getPromotions = async (req, res) => {
       ? await Promotion.getFeaturedPromotions(limit)
       : await Promotion.getActivePromotions({ limit });
 
-    console.log("promotions", promotions);
+    // console.log("promotions", promotions);
     return res.json({
       success: true,
       promotions,
     });
   } catch (error) {
-    console.error("Get promotions error:", error);
+    // console.error("Get promotions error:", error);
     return res.status(500).json({
       success: false,
       message: "Failed to load promotions",
@@ -158,7 +145,7 @@ export const getQuickAccess = async (req, res) => {
       quickAccess,
     });
   } catch (error) {
-    console.error("Get quick access error:", error);
+    // console.error("Get quick access error:", error);
     return res.status(500).json({
       success: false,
       message: "Failed to load quick access tiles",
@@ -206,7 +193,7 @@ export const searchOffers = async (req, res) => {
       promotions,
     });
   } catch (error) {
-    console.error("Search offers error:", error);
+    // console.error("Search offers error:", error);
     return res.status(500).json({
       success: false,
       message: "Failed to search offers",
@@ -228,14 +215,14 @@ export const getActivePromotionsForUser = async (req, res) => {
     const promotions = await Promotion.getPromotionsForUser(user, {
       limit: 20,
     });
-    console.log(
-      "Active promotions for user:",
-      promotions.map((p) => p.title),
-    );
+    // console.log(
+    //   "Active promotions for user:",
+    //   promotions.map((p) => p.title),
+    // );
 
     return res.json({ success: true, promotions });
   } catch (error) {
-    console.error("Error fetching active promotions:", error);
+    // console.error("Error fetching active promotions:", error);
     return res
       .status(500)
       .json({ success: false, message: "Failed to load active promotions" });
@@ -258,14 +245,14 @@ export const getFeaturedPromotionsForUser = async (req, res) => {
       featured: true,
       limit: 10,
     });
-    console.log(
-      "Featured promotions for user:",
-      promotions.map((p) => p.title),
-    );
+    // // console.log(
+    //   "Featured promotions for user:",
+    //   promotions.map((p) => p.title),
+    // );
 
     return res.json({ success: true, promotions });
   } catch (error) {
-    console.error("Error fetching featured promotions:", error);
+    // console.error("Error fetching featured promotions:", error);
     return res
       .status(500)
       .json({ success: false, message: "Failed to load featured promotions" });
@@ -284,14 +271,14 @@ export const getActiveBannersForUser = async (req, res) => {
       : null;
 
     const banners = await Banner.getActiveBanners({ user, limit: 10 });
-    console.log(
-      "Active banners for user:",
-      banners.map((b) => b.title),
-    );
+    // // console.log(
+    //   "Active banners for user:",
+    //   banners.map((b) => b.title),
+    // );
 
     return res.json({ success: true, banners });
   } catch (error) {
-    console.error("Error fetching active banners:", error);
+    // // console.error("Error fetching active banners:", error);
     return res
       .status(500)
       .json({ success: false, message: "Failed to load active banners" });
@@ -310,14 +297,14 @@ export const getFeaturedBannersForUser = async (req, res) => {
       : null;
 
     const banners = await Banner.getActiveBanners({ user, limit: 5 }); // adjust limit as needed
-    console.log(
-      "Featured banners for user:",
-      banners.map((b) => b.title),
-    );
+    // // console.log(
+    //   "Featured banners for user:",
+    //   banners.map((b) => b.title),
+    // );
 
     return res.json({ success: true, banners });
   } catch (error) {
-    console.error("Error fetching featured banners:", error);
+    // // console.error("Error fetching featured banners:", error);
     return res
       .status(500)
       .json({ success: false, message: "Failed to load featured banners" });

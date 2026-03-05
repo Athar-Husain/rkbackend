@@ -112,7 +112,7 @@ export const staffProtect = async (req, res, next) => {
         .json({ success: false, error: "Access denied: Not a staff" });
     }
 
-    req.staff = staff; // attach staff to request
+    req.user = staff; // attach staff to request
     next();
   } catch (err) {
     return res

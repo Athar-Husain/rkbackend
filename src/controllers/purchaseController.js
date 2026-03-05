@@ -33,7 +33,7 @@ export const recordPurchaseproduction = async (req, res, next) => {
       delivery = {},
       notes = "",
     } = req.body;
-    const requestedStaff = req.staff;
+    const requestedStaff = req.user;
 
     if (!requestedStaff)
       return res.status(400).json({ success: false, error: "Staff not found" });
@@ -201,7 +201,7 @@ export const recordPurchase = async (req, res, next) => {
       notes = "",
     } = req.body;
 
-    const requestedStaff = req.staff;
+    const requestedStaff = req.user;
     if (!requestedStaff) {
       return res.status(400).json({ success: false, error: "Staff Not Found" });
     }
@@ -939,7 +939,7 @@ export const getMyPurchases = async (req, res, next) => {
 
 export const getMyRecordedPurchases = async (req, res) => {
   try {
-    const staffId = req.staff._id;
+    const staffId = req.user._id;
 
     const purchases = await Purchase.find({ staffId })
       .populate("userId", "name email")

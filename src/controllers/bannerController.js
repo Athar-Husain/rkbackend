@@ -10,8 +10,8 @@ import { buildTargetingConditions } from "../services/targetingService.js";
 export const createBanner = async (req, res) => {
   try {
 
-    console.log("req user", req.user)
-    console.log("req body", req.body)
+    // console.log("req user", req.user)
+    // console.log("req body", req.body)
     const banner = await Banner.create({
       ...req.body,
       createdBy: req.user._id,
