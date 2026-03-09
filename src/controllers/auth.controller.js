@@ -674,7 +674,7 @@ export const registerFCMToken = async (req, res) => {
 
 export const logout = async (req, res) => {
   try {
-    console.log("logout hitt");
+    // console.log("logout hitt");
     const userId = req.user._id;
     const { deviceToken, deviceId } = req.body; // Optional: specific device to logout
 
