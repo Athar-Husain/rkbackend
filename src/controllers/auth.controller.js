@@ -286,7 +286,7 @@ export const signupVerifyOTP = async (req, res) => {
 
     const { tempUser } = decoded;
 
-    console.log("tempUser in singnUpVerifyOTP ", tempUser);
+    // console.log("tempUser in singnUpVerifyOTP ", tempUser);
     // Verify OTP - FIXED: Use exact identifier from signup
     await verifyOTP({
       identifier: tempUser.email.toLowerCase(), // Use the email from tempUser (should match exactly)
@@ -422,10 +422,10 @@ export const signupVerifyOTP = async (req, res) => {
 
 export const signinSendOTP = async (req, res) => {
   try {
-    console.log("Signin Send OTP hit");
+    // console.log("Signin Send OTP hit");
     const { emailOrMobile } = req.body;
 
-    console.log("Received:", emailOrMobile);
+    // console.log("Received:", emailOrMobile);
 
     // Find user by email OR mobile (case-insensitive for email)
     const user = await User.findOne({

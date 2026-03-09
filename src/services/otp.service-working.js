@@ -542,7 +542,7 @@ export const sendDualOTP2 = async ({
   }
 };
 
-export const sendDualOTPWorking = async ({
+export const sendDualOTP = async ({
   email,
   mobile,
   purpose,
@@ -596,97 +596,6 @@ export const sendDualOTPWorking = async ({
     logger.error("Dual OTP Failure", error);
     console.log("Error in sendDualOTP:", error.message);
     throw error;
-  }
-};
-
-/* =====================================================
-   SEND DUAL OTP - CLEAN VERSION
-===================================================== */
-export const sendDualOTP = async ({
-  email,
-  mobile,
-  purpose,
-  metadata = {},
-}) => {
-  try {
-    if (!email || !mobile || !purpose) {
-      return {
-        success: false,
-        code: 400,
-        message: "Missing required parameters",
-      };
-    }
-
-    // 1. Cleanup old OTPs
-    await OTP.cleanupOldOTPs(email, purpose);
-
-    // 2. Rate limits
-    try {
-      await checkRateLimits(email, purpose);
-    } catch (rateError) {
-      return { success: false, code: 429, message: rateError.message };
-    }
-
-    // 3. Cooldown
-    try {
-      await checkCooldown(email, purpose);
-    } catch (cooldownError) {
-      return { success: false, code: 429, message: cooldownError.message };
-    }
-
-    // 4. Generate OTP
-    const otp = generateOTP();
-    const expiresAt = new Date(Date.now() + OTP_EXPIRY_MINUTES * 60 * 1000);
-
-    // 5. Delete any existing unverified OTPs
-    await OTP.deleteMany({
-      identifier: email.toLowerCase(),
-      purpose,
-      verified: false,
-    });
-
-    // 6. Save new OTP record
-    const otpRecord = await OTP.create({
-      identifier: email.toLowerCase(),
-      type: "email",
-      otp,
-      purpose,
-      expiresAt,
-      metadata: { ...metadata, mobile },
-    });
-
-    // 7. Send OTP to both channels
-    const emailSent = await sendOTPEmail(email, otp, purpose);
-    const smsSent = await sendOTPSMS(mobile, otp, purpose);
-
-    if (!emailSent && !smsSent) {
-      await OTP.deleteOne({ _id: otpRecord._id });
-      return {
-        success: false,
-        code: 500,
-        message: "Failed to send OTP to any channel",
-      };
-    }
-
-    return {
-      success: true,
-      code: 200,
-      message: "OTP sent successfully",
-      expiresIn: OTP_EXPIRY_MINUTES * 60,
-      ...(process.env.NODE_ENV === "development" && { testOtp: otp }),
-    };
-  } catch (error) {
-    logger.error("Dual OTP Failure", {
-      error: error.message,
-      email,
-      mobile,
-      purpose,
-    });
-    return {
-      success: false,
-      code: 500,
-      message: "Internal server error while sending OTP",
-    };
   }
 };
 
