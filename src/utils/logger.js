@@ -1,62 +1,84 @@
 import winston from "winston";
 import path from "path";
+import fs from "fs";
 
-const { combine, timestamp, printf, colorize, json, metadata } = winston.format;
+const { combine, timestamp, printf, colorize, json, metadata, errors } =
+  winston.format;
 
-// 1. Define a clean format for the Console
-const consoleFormat = printf(({ level, message, timestamp, metadata }) => {
-  // Only show metadata if it's not empty
-  const metaString =
-    metadata && Object.keys(metadata).length > 0
-      ? ` ${JSON.stringify(metadata)}`
-      : "";
+const isProduction = process.env.NODE_ENV === "production";
 
-  return `${timestamp} [${level}]: ${message}${metaString}`;
-});
+// Ensure logs directory exists in development
+if (!isProduction) {
+  const logDir = "logs";
+  if (!fs.existsSync(logDir)) {
+    fs.mkdirSync(logDir);
+  }
+}
 
-// 2. Create logger instance
-const logger = winston.createLogger({
-  level: process.env.LOG_LEVEL || "info",
-  format: combine(
-    timestamp({ format: "YYYY-MM-DD HH:mm:ss" }),
-    // This moves extra arguments into a "metadata" property
-    metadata({ fillExcept: ["message", "level", "timestamp"] }),
-  ),
-  transports: [
-    // Console: Clean and Colorized (No empty {} metadata)
-    new winston.transports.Console({
-      format: combine(colorize(), consoleFormat),
-    }),
+// Console format
+const consoleFormat = printf(
+  ({ level, message, timestamp, metadata, stack }) => {
+    const metaString =
+      metadata && Object.keys(metadata).length > 0
+        ? ` ${JSON.stringify(metadata)}`
+        : "";
 
-    // Error log file: JSON format
+    const stackTrace = stack ? `\n${stack}` : "";
+
+    return `${timestamp} [${level}]: ${message}${metaString}${stackTrace}`;
+  },
+);
+
+// Base transports (always include console)
+const transports = [
+  new winston.transports.Console({
+    format: combine(colorize(), consoleFormat),
+  }),
+];
+
+// Add file transports only in development
+if (!isProduction) {
+  transports.push(
     new winston.transports.File({
       filename: path.join("logs", "error.log"),
       level: "error",
       format: json(),
-      maxsize: 5242880, // 5MB
+      maxsize: 5242880,
       maxFiles: 5,
     }),
 
-    // Combined log file: JSON format
     new winston.transports.File({
       filename: path.join("logs", "combined.log"),
       format: json(),
-      maxsize: 5242880, // 5MB
+      maxsize: 5242880,
       maxFiles: 5,
     }),
-  ],
+  );
+}
 
-  exceptionHandlers: [
+const logger = winston.createLogger({
+  level: process.env.LOG_LEVEL || "info",
+  format: combine(
+    timestamp({ format: "YYYY-MM-DD HH:mm:ss" }),
+    errors({ stack: true }),
+    metadata({ fillExcept: ["message", "level", "timestamp", "stack"] }),
+  ),
+  transports,
+});
+
+// Handle uncaught exceptions
+if (!isProduction) {
+  logger.exceptions.handle(
     new winston.transports.File({
       filename: path.join("logs", "exceptions.log"),
     }),
-  ],
+  );
 
-  rejectionHandlers: [
+  logger.rejections.handle(
     new winston.transports.File({
       filename: path.join("logs", "rejections.log"),
     }),
-  ],
-});
+  );
+}
 
 export default logger;
