@@ -1,44 +1,28 @@
 import User from "../models/User.model.js";
 import CityArea from "../models/CityArea.model.js";
 
-/* ---------------- HELPERS ---------------- */
-const getCity = async (cityName) => {
-  return await CityArea.findOne({
-    city: cityName.toUpperCase(),
-  });
-};
-
-const getArea = (cityDoc, areaName) => {
-  return cityDoc.areas.find((a) => a.name === areaName.toUpperCase());
-};
-
 export const seedUsers = async (stores) => {
   console.log("👤 Seeding users...");
-
   await User.deleteMany();
 
   /* ---------------- BALLARI USER ---------------- */
-  const ballariCity = await getCity("Ballari");
-
+  const ballariCity = await CityArea.findOne({ city: "Ballari" });
   if (!ballariCity) {
     throw new Error("City 'Ballari' not found");
   }
 
-  const cowlBazar = getArea(ballariCity, "Cowl Bazar");
-
+  const cowlBazar = ballariCity.areas.find((a) => a.name === "Cowl Bazar");
   if (!cowlBazar) {
     throw new Error("Area 'Cowl Bazar' not found in Ballari");
   }
 
   /* ---------------- SIRUGUPPA USER ---------------- */
-  const siruguppaCity = await getCity("Siruguppa");
-
+  const siruguppaCity = await CityArea.findOne({ city: "Siruguppa" });
   if (!siruguppaCity) {
     throw new Error("City 'Siruguppa' not found");
   }
 
-  const mainRoad = getArea(siruguppaCity, "Main Road");
-
+  const mainRoad = siruguppaCity.areas.find((a) => a.name === "Main Road");
   if (!mainRoad) {
     throw new Error("Area 'Main Road' not found in Siruguppa");
   }
@@ -53,7 +37,6 @@ export const seedUsers = async (stores) => {
 
       city: ballariCity._id,
       area: cowlBazar._id,
-
       cityName: ballariCity.city,
       areaName: cowlBazar.name,
 
@@ -68,7 +51,6 @@ export const seedUsers = async (stores) => {
 
       city: siruguppaCity._id,
       area: mainRoad._id,
-
       cityName: siruguppaCity.city,
       areaName: mainRoad.name,
 
@@ -78,6 +60,5 @@ export const seedUsers = async (stores) => {
   ]);
 
   console.log(`✅ ${users.length} users seeded`);
-
   return users;
 };

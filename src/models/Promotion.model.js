@@ -147,7 +147,23 @@ promotionSchema.index({ "targeting.segments": 1 });
    PRE SAVE
 ===================================================== */
 
-promotionSchema.pre("save", function (next) {
+// promotionSchema.pre("save", function (next) {
+//   // Auto swap if dates are reversed
+//   if (this.validFrom > this.validUntil) {
+//     const temp = this.validFrom;
+//     this.validFrom = this.validUntil;
+//     this.validUntil = temp;
+//   }
+
+//   // Auto mark expired
+//   if (this.validUntil < new Date()) {
+//     this.status = "EXPIRED";
+//   }
+
+//   next();
+// });
+
+promotionSchema.pre("save", function () {
   // Auto swap if dates are reversed
   if (this.validFrom > this.validUntil) {
     const temp = this.validFrom;
@@ -159,8 +175,6 @@ promotionSchema.pre("save", function (next) {
   if (this.validUntil < new Date()) {
     this.status = "EXPIRED";
   }
-
-  next();
 });
 
 /* =====================================================

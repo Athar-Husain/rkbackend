@@ -23,7 +23,6 @@ try {
       credential: admin.credential.cert(serviceAccount),
     });
   }
-
   firebaseInitialized = true;
   console.log("🔥 Firebase Initialized");
 } catch (err) {
@@ -37,9 +36,10 @@ const getModel = (userModel) => {
   return Model;
 };
 
-// Internal helper for logging notifications
+// Internal helper for single sends
 const logNotification = async (logData) => {
   try {
+    // Ensuring category matches Schema Enum
     const validCategories = [
       "ORDER",
       "WARRANTY",
@@ -49,11 +49,9 @@ const logNotification = async (logData) => {
       "KYC",
       "SUPPORT",
     ];
-
     if (!validCategories.includes(logData.category)) {
       logData.category = "SYSTEM";
     }
-
     await NotificationLog.create(logData);
   } catch (err) {
     console.error("Notification Log Error:", err.message);
@@ -76,7 +74,6 @@ export const sendNotificationSMS = async (
       deliveryStatus: "SENT",
       category: "SYSTEM",
     });
-
     return { success: true };
   } catch (err) {
     return { success: false };
@@ -92,37 +89,25 @@ export const sendPushNotification = async (
   skipLog = false,
 ) => {
   try {
-    if (!firebaseInitialized) {
+    if (!firebaseInitialized)
       return { success: false, message: "Firebase not initialized" };
-    }
 
     const Model = getModel(userModel);
-
     const user = await Model.findById(userId).lean();
-
-    if (!user?.deviceTokens?.length) {
+    if (!user?.deviceTokens?.length)
       return { success: false, message: "No device tokens" };
-    }
 
-    const tokens =
-      user.deviceTokens?.map((t) => t?.token).filter(Boolean) || [];
+    const tokens = user.deviceTokens.map((t) => t.token).filter(Boolean);
+    if (!tokens.length) return { success: false, message: "No valid tokens" };
 
-    if (!tokens.length) {
-      return { success: false, message: "No valid tokens" };
-    }
-
-    const notificationId = new mongoose.Types.ObjectId().toString();
-
+    // High Priority Payload for Killed State
     const message = {
       tokens,
-
       notification: {
         title: String(title),
         body: String(body),
       },
-
       data: {
-        notificationId,
         title: String(title),
         body: String(body),
         category: String(navData.category || "SYSTEM"),
@@ -130,17 +115,14 @@ export const sendPushNotification = async (
         targetId: String(navData.targetId || ""),
         image: String(navData.image || ""),
       },
-
       android: {
         priority: "high",
-        ttl: 3600 * 1000,
         notification: {
           channelId: "alerts",
           priority: "high",
           sound: "default",
         },
       },
-
       apns: {
         payload: {
           aps: {
@@ -156,7 +138,6 @@ export const sendPushNotification = async (
     const response = await admin.messaging().sendEachForMulticast(message);
 
     const invalidTokens = [];
-
     response.responses.forEach((r, index) => {
       if (
         !r.success &&
@@ -188,11 +169,7 @@ export const sendPushNotification = async (
       });
     }
 
-    return {
-      success: true,
-      successCount: response.successCount,
-      failureCount: response.failureCount,
-    };
+    return { success: true, successCount: response.successCount };
   } catch (err) {
     return { success: false, error: err.message };
   }
@@ -213,9 +190,7 @@ export const triggerNotification = async (
     image,
     channels = ["PUSH"],
   } = options;
-
   const navData = { category, targetScreen, targetId, image };
-
   const results = [];
 
   if (channels.includes("PUSH")) {
@@ -230,19 +205,12 @@ export const triggerNotification = async (
       ),
     );
   }
-
   return results;
 };
 
 export const sendBulkNotifications = async (userIds, userModel, options) => {
-  const results = {
-    total: userIds.length,
-    success: 0,
-    failed: 0,
-  };
-
+  const results = { total: userIds.length, success: 0, failed: 0 };
   const CHUNK_SIZE = 500;
-
   const validCategories = [
     "ORDER",
     "WARRANTY",
@@ -255,17 +223,16 @@ export const sendBulkNotifications = async (userIds, userModel, options) => {
 
   for (let i = 0; i < userIds.length; i += CHUNK_SIZE) {
     const chunk = userIds.slice(i, i + CHUNK_SIZE);
-
     const bulkLogs = [];
 
     const chunkPromises = chunk.map(async (id) => {
       const responses = await triggerNotification(id, userModel, options, true);
-
       const isSuccess = responses.some((r) => r.success);
 
       if (isSuccess) results.success++;
       else results.failed++;
 
+      // Strict validation for Schema Enums
       const finalCategory = validCategories.includes(options.category)
         ? options.category
         : "SYSTEM";
@@ -292,6 +259,5 @@ export const sendBulkNotifications = async (userIds, userModel, options) => {
       );
     }
   }
-
   return results;
 };

@@ -1,60 +1,68 @@
 // config/db.js
-import mongoose, { connect } from "mongoose";
+import mongoose from "mongoose";
 
 const connectDB = async () => {
   try {
-    const conn = await connect(process.env.MONGO_URI, {});
-    console.log(`MongoDB Connected from DB file : ${conn.connection.host}`);
+    if (!process.env.MONGO_URI) {
+      throw new Error("MONGO_URI is not defined in environment variables");
+    }
+
+    console.log("🔗 Connecting to MongoDB...");
+    // console.log("MONGO_URI:", process.env.MONGO_URI);
+
+    const conn = await mongoose.connect(process.env.MONGO_URI);
+
+    console.log(`✅ MongoDB Connected: ${conn.connection.host}`);
+    console.log(`📦 Database: ${conn.connection.name}`);
   } catch (error) {
-    console.error(`Error connecting to MongoDB: ${error.message}`);
+    console.error("❌ MongoDB connection error:");
+    console.error(error.message);
+
     process.exit(1);
   }
 };
 
-const createIndexes = async () => {
-  // User indexes
-  await mongoose
-    .model("User")
-    .createIndexes([{ mobile: 1 }, { referralCode: 1 }, { city: 1, area: 1 }]);
+/* ---------------- INDEX CREATION ---------------- */
+export const createIndexes = async () => {
+  try {
+    console.log("📌 Creating database indexes...");
 
-  // Product indexes
-  await mongoose
-    .model("Product")
-    .createIndexes([
-      { sku: 1 },
-      { category: 1 },
-      { brand: 1 },
-      { "specifications.key": 1 },
-    ]);
+    const User = mongoose.model("User");
+    const Product = mongoose.model("Product");
+    const Coupon = mongoose.model("Coupon");
+    const UserCoupon = mongoose.model("UserCoupon");
+    const Purchase = mongoose.model("Purchase");
 
-  // Coupon indexes
-  await mongoose
-    .model("Coupon")
-    .createIndexes([
-      { code: 1 },
-      { "targeting.type": 1 },
-      { validUntil: 1, status: 1 },
-    ]);
+    // User indexes
+    await User.collection.createIndex({ mobile: 1 });
+    await User.collection.createIndex({ referralCode: 1 });
+    await User.collection.createIndex({ city: 1, area: 1 });
 
-  // UserCoupon indexes
-  await mongoose
-    .model("UserCoupon")
-    .createIndexes([
-      { userId: 1, status: 1 },
-      { uniqueCode: 1 },
-      { couponId: 1 },
-    ]);
+    // Product indexes
+    await Product.collection.createIndex({ sku: 1 });
+    await Product.collection.createIndex({ category: 1 });
+    await Product.collection.createIndex({ brand: 1 });
+    await Product.collection.createIndex({ "specifications.key": 1 });
 
-  // Purchase indexes
-  await mongoose
-    .model("Purchase")
-    .createIndexes([
-      { userId: 1, createdAt: -1 },
-      { storeId: 1, createdAt: -1 },
-      { invoiceNumber: 1 },
-    ]);
+    // Coupon indexes
+    await Coupon.collection.createIndex({ code: 1 });
+    await Coupon.collection.createIndex({ "targeting.type": 1 });
+    await Coupon.collection.createIndex({ validUntil: 1, status: 1 });
 
-  console.log("Database indexes created successfully");
+    // UserCoupon indexes
+    await UserCoupon.collection.createIndex({ userId: 1, status: 1 });
+    await UserCoupon.collection.createIndex({ uniqueCode: 1 });
+    await UserCoupon.collection.createIndex({ couponId: 1 });
+
+    // Purchase indexes
+    await Purchase.collection.createIndex({ userId: 1, createdAt: -1 });
+    await Purchase.collection.createIndex({ storeId: 1, createdAt: -1 });
+    await Purchase.collection.createIndex({ invoiceNumber: 1 });
+
+    console.log("✅ Database indexes created successfully");
+  } catch (error) {
+    console.error("❌ Error creating indexes:", error.message);
+  }
 };
 
 export default connectDB;

@@ -12,7 +12,6 @@ export const seedStaff = async (stores = []) => {
 
     console.log("👥 Seeding staff...");
 
-    // Clear existing staff
     await Staff.deleteMany();
 
     const mainStore = stores[0]._id;
@@ -22,8 +21,6 @@ export const seedStaff = async (stores = []) => {
         storeId: mainStore,
         name: "Admin User",
         username: "admin",
-        email: "admin@rk.com",
-        mobile: "9876543210",
         password: "Admin@123",
         userType: "admin",
         role: "admin",
@@ -38,8 +35,6 @@ export const seedStaff = async (stores = []) => {
         storeId: mainStore,
         name: "Store Manager",
         username: "manager",
-        email: "manager@rk.com",
-        mobile: "9876543211",
         password: "Manager@123",
         userType: "staff",
         role: "manager",
@@ -54,8 +49,6 @@ export const seedStaff = async (stores = []) => {
         storeId: mainStore,
         name: "Counter Staff",
         username: "staff1",
-        email: "staff1@rk.com",
-        mobile: "9876543212",
         password: "Staff@123",
         userType: "staff",
         role: "staff",
@@ -68,22 +61,15 @@ export const seedStaff = async (stores = []) => {
       },
     ];
 
-    // Use create() so mongoose pre-save hooks run properly
+    // IMPORTANT: insertMany DOES NOT run pre-save hooks reliably
+    // So we use create() instead
     const createdStaff = [];
-
     for (const staff of staffData) {
       const doc = await Staff.create(staff);
       createdStaff.push(doc);
     }
 
     console.log(`✅ Seeded ${createdStaff.length} staff members`);
-
-    createdStaff.forEach((staff) => {
-      console.log(
-        `• ${staff.name} (${staff.role}) - Username: ${staff.username}`,
-      );
-    });
-
     return createdStaff;
   } catch (error) {
     console.error("❌ Staff seeding failed:", error);

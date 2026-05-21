@@ -435,7 +435,7 @@ export const signinSendOTP = async (req, res) => {
       ],
     }).lean(); // Use lean to get a plain object
 
-    console.log("User found in SignIn (lean):", user);
+    // console.log("User found in SignIn (lean):", user);
 
     if (!user) {
       console.log("User not found for:", emailOrMobile);

@@ -1,24 +1,13 @@
 import NotificationLog from "../models/NotificationLog.model.js";
 
 export const seedNotificationLogs = async (users) => {
-  console.log("🔔 Seeding notification logs...");
-
   await NotificationLog.deleteMany();
 
   await NotificationLog.create({
     userId: users[0]._id,
-    userModel: "User",
-
     type: "PUSH",
-
     title: "Welcome!",
     content: "Thanks for registering with RK Electronics",
-
-    category: "SYSTEM",
-
-    deliveryStatus: "DELIVERED",
-
-    isRead: false,
   });
 
   console.log("✅ NotificationLogs seeded");
